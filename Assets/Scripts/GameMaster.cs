@@ -13,6 +13,11 @@ using TMPro;            // Gives us TMP_Text, used for all on-screen text in thi
 /// Stalker, or Lumina yet - those will hook into the systems below (oxygen,
 /// lights, cameras) once they exist, but this file is intentionally free of
 /// any animatronic logic for this first playable slice.
+///
+/// This GameObject is a plain, isolated root object - it does not need to be
+/// parented under the Canvas and does not carry any UI Graphic component.
+/// See the Office Look/Pan region for how it still reads the cursor's
+/// position reliably despite that.
 /// </summary>
 public class GameMaster : MonoBehaviour
 {
@@ -200,53 +205,99 @@ public class GameMaster : MonoBehaviour
     [Tooltip("The Transform that holds the office SpriteRenderer(s). This is the object that physically moves left/right as the player looks around.")]
     [SerializeField] private Transform officeViewRoot;
 
+    [Tooltip("Drag the scene's main Canvas here. We use its RectTransform to resolve the cursor's screen position reliably (the same way Unity's UI already hit-tests buttons correctly), instead of dividing Input.mousePosition by Screen.width directly, which can drift out of sync with the Canvas's real pixel size after the Game View is resized/docked or under Editor DPI scaling.")]
+    [SerializeField] private RectTransform canvasRectTransform;
+
     [Header("Office Look/Pan - Settings")]
 
     [Tooltip("How far (in world units) the office view can shift left or right of its starting position.")]
     [SerializeField] private float maxPanDistance = 5f;
 
-    [Tooltip("Normalized distance from the screen edge (0-1) that counts as 'far left'/'far right'. 0.08 means the outer 8% of the screen on each side.")]
-    [SerializeField] private float lookEdgeThreshold = 0.08f;
+    [Tooltip("Normalized distance from each screen edge (0-0.5) that counts as a 'scroll zone'. The middle of the screen (everything between the two zones) is neutral padding where the cursor does not move the view - like FNAF3, you have to push the cursor past this point to commit to scrolling.")]
+    [SerializeField] private float panZoneThreshold = 0.3f;
+
+    [Tooltip("How fast (in world units per second) the office view scrolls toward its destination once the cursor is past the padding. This is what makes the pan feel like a committed scroll rather than an instant snap to the mouse position.")]
+    [SerializeField] private float panSpeed = 4f;
+
+    [Tooltip("How close (in world units) the view must get to the full pan distance before we count it as 'arrived' and show the Maintenance/Camera button. A small buffer so the button appears right as the scroll finishes, not before.")]
+    [SerializeField] private float edgeArrivalTolerance = 0.05f;
 
     // Where the office view should sit when the player is looking dead
     // center, captured once at Start() so panning is always relative to
     // wherever the object was originally placed in the scene.
     private Vector3 officeViewCenterPosition;
 
-    /// <summary>
-    /// Reads the mouse's horizontal screen position, pans the office view to
-    /// match, and shows/hides the Maintenance/Camera open buttons once the
-    /// player is looking far enough to either edge. Only called when no
-    /// panel is currently open (you cannot pan while a panel covers the view).
-    /// </summary>
-    private void UpdateLookAndEdgeButtons()
-    {
-        // Convert the mouse's pixel X position into a 0-1 value across the
-        // width of the screen: 0 is the far left edge, 1 is the far right edge.
-        float normalizedMouseX = Mathf.Clamp01(Input.mousePosition.x / Screen.width);
+    // The view's current offset from center. Unlike a direct mouse-to-position
+    // mapping, this now persists across frames and eases toward its target
+    // over time, which is what produces the FNAF3-style scrolling motion.
+    private float currentPanOffset;
 
-        // Pan the office view: at normalizedMouseX = 0 (looking left) the
-        // view sits at +maxPanDistance (revealing the left side of the room),
-        // at normalizedMouseX = 1 (looking right) it sits at -maxPanDistance.
-        // If this feels reversed once you see it in-game, just flip the two
-        // Lerp arguments below.
-        if (officeViewRoot != null)
+    /// <summary>
+    /// Reads the latest cursor zone (left scroll zone, right scroll zone, or
+    /// the neutral padding in the middle) and eases the office view toward
+    /// that zone's destination at a constant speed (a scroll, not a snap).
+    /// Shows/hides the Maintenance/Camera open buttons only once the view
+    /// has fully finished scrolling to that side. Only called when no panel
+    /// is currently open (you cannot pan while a panel covers the view).
+    /// </summary>
+    private void UpdateLookAndEdgeButtons(float deltaTime)
+    {
+        // Default to dead-center (the padding zone) in case canvasRectTransform
+        // hasn't been assigned yet - a safe fallback rather than a crash.
+        float normalizedMouseX = 0.5f;
+
+        if (canvasRectTransform != null)
         {
-            float xOffset = Mathf.Lerp(maxPanDistance, -maxPanDistance, normalizedMouseX);
-            officeViewRoot.localPosition = officeViewCenterPosition + new Vector3(xOffset, 0f, 0f);
+            // Resolve the cursor's screen position against the Canvas's own
+            // RectTransform. This goes through the same math Unity's UI uses
+            // to correctly hit-test buttons, and stays accurate even when
+            // Screen.width would not (see this field's tooltip for why we
+            // don't just divide Input.mousePosition.x by Screen.width).
+            Vector2 localPoint;
+            RectTransformUtility.ScreenPointToLocalPointInRectangle(canvasRectTransform, Input.mousePosition, null, out localPoint);
+
+            Rect rect = canvasRectTransform.rect;
+            normalizedMouseX = Mathf.Clamp01(Mathf.InverseLerp(rect.xMin, rect.xMax, localPoint.x));
         }
 
-        // The Maintenance open button appears only in the outer-left sliver
-        // of the screen, and is always available regardless of light state
-        // (you need it to be able to turn the lights back on).
-        bool lookingFarLeft = normalizedMouseX <= lookEdgeThreshold;
-        SetButtonVisible(maintenanceOpenButton, lookingFarLeft);
+        // Decide where the view WANTS to end up based on which zone the
+        // cursor is currently in. Default to holding whatever position we
+        // are already at - the padding zone is inert, it does NOT pull the
+        // view back to center. Only the two outer zones actively set a
+        // destination, matching FNAF3: the view only moves while you're
+        // looking toward an edge, and simply stays put everywhere else.
+        float targetOffset = currentPanOffset;
+        if (normalizedMouseX <= panZoneThreshold)
+        {
+            targetOffset = maxPanDistance;         // committed to scrolling fully left
+        }
+        else if (normalizedMouseX >= 1f - panZoneThreshold)
+        {
+            targetOffset = -maxPanDistance;        // committed to scrolling fully right
+        }
 
-        // The Camera open button appears only in the outer-right sliver of
-        // the screen, AND only while the lights are on (game bible: the
-        // Camera Monitor is disabled while the lights are off).
-        bool lookingFarRight = normalizedMouseX >= (1f - lookEdgeThreshold);
-        SetButtonVisible(cameraOpenButton, lookingFarRight && lightsOn);
+        // Move the current offset toward the destination at a fixed speed,
+        // rather than jumping straight to it. MoveTowards will not overshoot,
+        // so this naturally comes to rest exactly at the destination.
+        currentPanOffset = Mathf.MoveTowards(currentPanOffset, targetOffset, panSpeed * deltaTime);
+
+        if (officeViewRoot != null)
+        {
+            officeViewRoot.localPosition = officeViewCenterPosition + new Vector3(currentPanOffset, 0f, 0f);
+        }
+
+        // The Maintenance button only appears once the view has actually
+        // finished scrolling all the way to the left - not just because the
+        // cursor moved there - matching FNAF3's feel. It's always available
+        // regardless of light state (you need it to turn the lights back on).
+        bool reachedFarLeft = currentPanOffset >= maxPanDistance - edgeArrivalTolerance;
+        SetButtonVisible(maintenanceOpenButton, reachedFarLeft);
+
+        // Same idea for the Camera button on the right, AND only while the
+        // lights are on (game bible: the Camera Monitor is disabled while
+        // the lights are off).
+        bool reachedFarRight = currentPanOffset <= -maxPanDistance + edgeArrivalTolerance;
+        SetButtonVisible(cameraOpenButton, reachedFarRight && lightsOn);
     }
 
     /// <summary>Small helper to safely show/hide a button GameObject that might not be assigned yet.</summary>
@@ -564,6 +615,17 @@ public class GameMaster : MonoBehaviour
             officeViewCenterPosition = officeViewRoot.localPosition;
         }
 
+        // Start looking straight ahead, with no scroll destination committed yet.
+        currentPanOffset = 0f;
+
+        // canvasRectTransform is required for the office look/pan to work at
+        // all - warn clearly in the Console if it hasn't been assigned,
+        // rather than leaving the office silently stuck looking straight ahead.
+        if (canvasRectTransform == null)
+        {
+            Debug.LogWarning("GameMaster's Canvas Rect Transform field is not assigned, so the office view will not pan. Drag the scene's Canvas into that field in the Inspector.");
+        }
+
         // Reset the clock to 12 AM.
         currentHourOfNight = 0f;
 
@@ -619,7 +681,7 @@ public class GameMaster : MonoBehaviour
         // over full control of the screen while open.
         if (!isMaintenancePanelOpen && !isCameraPanelOpen)
         {
-            UpdateLookAndEdgeButtons();
+            UpdateLookAndEdgeButtons(Time.deltaTime);
         }
     }
 }

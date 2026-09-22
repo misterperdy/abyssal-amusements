@@ -2661,8 +2661,11 @@ MonoBehaviour:
   releasePressureDrainPerSecond: 8
   hypoxiaThresholdPercent: 50
   officeViewRoot: {fileID: 1660598820}
+  canvasRectTransform: {fileID: 62665907}
   maxPanDistance: 5
-  lookEdgeThreshold: 0.35
+  panZoneThreshold: 0.3
+  panSpeed: 12
+  edgeArrivalTolerance: 0.05
   maintenanceOpenButton: {fileID: 1422696500}
   maintenancePanel: {fileID: 936112583}
   lightsToggle: {fileID: 0}
