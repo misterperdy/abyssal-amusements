@@ -1,3 +1,4 @@
+using System.Collections;  // Gives us IEnumerator, needed for the Sonar Ping's timed coroutine.
 using UnityEngine;
 using UnityEngine.UI;   // Gives us Slider, Button, Toggle (the standard, non-TextMeshPro UI widgets).
 using TMPro;            // Gives us TMP_Text, used for all on-screen text in this project.
@@ -512,10 +513,49 @@ public class GameMaster : MonoBehaviour
     [Tooltip("Placeholder views for each camera feed, in the same order as the camera buttons you will build. Only one is shown at a time. Leave empty until you add camera art.")]
     [SerializeField] private GameObject[] cameraFeedViews;
 
+    [Header("Camera Monitor - Map / Vent Layer References")]
+    // The Camera Monitor has two parallel "layers", exactly like FNAF3's
+    // Cams/Vents split: the normal Facility Floorplan (rooms) and the Vent
+    // Network. Only one layer is visible at a time - ToggleMapView() below
+    // swaps between them. Each layer is made of two pieces: a "selector"
+    // root (the map graphic + the buttons you click to pick a camera) and a
+    // "feed" root (the actual camera views, one of which SelectCamera/
+    // SelectVentCamera shows at a time).
+
+    [Tooltip("The existing 'CameraSelector' object: the Facility Floorplan map graphic plus its camera-select buttons. Shown while isViewingVents is false.")]
+    [SerializeField] private GameObject regularCameraSelectorRoot;
+
+    [Tooltip("The existing 'CameraViews' object: the parent of cameraFeedViews. Shown while isViewingVents is false.")]
+    [SerializeField] private GameObject regularCameraFeedRoot;
+
+    [Tooltip("A new object you build: the Vent Network map graphic plus its vent-select buttons. Shown while isViewingVents is true.")]
+    [SerializeField] private GameObject ventCameraSelectorRoot;
+
+    [Tooltip("A new object you build: the parent of ventFeedViews. Shown while isViewingVents is true.")]
+    [SerializeField] private GameObject ventCameraFeedRoot;
+
+    [Tooltip("Placeholder views for each vent camera feed, in the same order as the vent buttons you will build. Works exactly like cameraFeedViews, just for the Vent Network layer.")]
+    [SerializeField] private GameObject[] ventFeedViews;
+
+    [Tooltip("The Map button that swaps between the Facility Floorplan and Vent Network layers. Hook its OnClick to ToggleMapView().")]
+    [SerializeField] private Button mapToggleButton;
+
+    [Tooltip("OPTIONAL: every regular camera-select Button, used only to visibly grey them out while a Sonar Ping has the monitor locked. Safe to leave empty - the ping lock still functionally blocks camera switching without this.")]
+    [SerializeField] private Button[] regularCameraSelectButtons;
+
+    [Tooltip("OPTIONAL: every vent camera-select Button - same purpose as regularCameraSelectButtons, but for the Vent Network layer.")]
+    [SerializeField] private Button[] ventCameraSelectButtons;
+
     [Header("Camera Monitor - Settings")]
 
     [Tooltip("When checked (default, matches the game bible), the Camera Monitor button is hidden and cannot be opened while the lights are off. Uncheck during playtesting if you want to reach the camera screen regardless of light state.")]
     [SerializeField] private bool hideCameraButtonWhileLightsAreDim = true;
+
+    [Tooltip("Which camera (its index in Camera Feed Views) is shown the first time the Camera Monitor is opened each night. Every time after that, the Monitor remembers whichever camera was last selected.")]
+    [SerializeField] private int defaultCameraIndex = 0;
+
+    [Tooltip("Which vent camera (its index in Vent Feed Views) is shown the first time the player switches to the Vent Network layer each night. Every time after that, the Monitor remembers whichever vent camera was last selected - mirrors defaultCameraIndex above, just for the vent layer.")]
+    [SerializeField] private int defaultVentCameraIndex = 0;
 
     // True while the Camera Monitor is open and covering the view.
     private bool isCameraPanelOpen;
@@ -523,6 +563,14 @@ public class GameMaster : MonoBehaviour
     // Which camera feed is currently selected, or -1 if none has been
     // picked yet this session.
     private int currentCameraIndex = -1;
+
+    // Which vent camera feed is currently selected, or -1 if none has been
+    // picked yet this session. Mirrors currentCameraIndex, just for vents.
+    private int currentVentCameraIndex = -1;
+
+    // False = viewing the Facility Floorplan (regular cameras, the default).
+    // True = viewing the Vent Network. Flipped by ToggleMapView().
+    private bool isViewingVents;
 
     /// <summary>
     /// Opens or closes the Camera Monitor depending on its current state.
@@ -534,6 +582,17 @@ public class GameMaster : MonoBehaviour
     /// </summary>
     public void ToggleCameraMonitor()
     {
+        // Game bible: firing a Sonar Ping locks the monitor - "you cannot
+        // lower the cameras while the ping animation plays." Block the
+        // player-facing toggle entirely while a ping is in progress. Note
+        // this does NOT affect CloseCameraMonitor() being called directly
+        // by ToggleLights()/HideAllPanelsAndButtons() elsewhere - lights-off
+        // and game-over must always be able to force the monitor shut.
+        if (isPingLocked)
+        {
+            return;
+        }
+
         if (isCameraPanelOpen)
         {
             CloseCameraMonitor();
@@ -559,6 +618,16 @@ public class GameMaster : MonoBehaviour
         if (cameraPanel != null)
         {
             cameraPanel.SetActive(true);
+        }
+
+        // Only the very first open this night has no prior selection
+        // (currentCameraIndex is still -1) - show the configured default.
+        // Every open after that leaves currentCameraIndex/cameraFeedViews
+        // exactly as SelectCamera() last set them, so the Monitor remembers
+        // the last-viewed camera automatically.
+        if (currentCameraIndex == -1)
+        {
+            SelectCamera(defaultCameraIndex);
         }
 
         // Note: unlike before, we deliberately do NOT hide cameraOpenButton
@@ -617,6 +686,13 @@ public class GameMaster : MonoBehaviour
     /// </summary>
     public void SelectCamera(int cameraIndex)
     {
+        // Blocked while a Sonar Ping has the monitor locked - see the Sonar
+        // Ping region for why.
+        if (isPingLocked)
+        {
+            return;
+        }
+
         // Guard against an out-of-range index (e.g. an Inspector typo)
         // rather than throwing an exception mid-game.
         if (cameraFeedViews == null || cameraIndex < 0 || cameraIndex >= cameraFeedViews.Length)
@@ -626,14 +702,514 @@ public class GameMaster : MonoBehaviour
         }
 
         currentCameraIndex = cameraIndex;
+        ActivateOnlyIndex(cameraFeedViews, currentCameraIndex);
+        RefreshAllCameraSelectButtonHighlights();
+    }
 
-        // Show only the selected feed, hide every other one.
-        for (int i = 0; i < cameraFeedViews.Length; i++)
+    /// <summary>
+    /// Switches the Vent Network layer to show a specific vent camera's
+    /// feed. Hook one of these up (with the matching index) to each vent
+    /// button you build inside ventCameraSelectorRoot. Works exactly like
+    /// SelectCamera() above, just targeting the vent arrays/state instead of
+    /// the regular camera ones - the two layers are otherwise identical.
+    /// </summary>
+    public void SelectVentCamera(int ventCameraIndex)
+    {
+        // Blocked while a Sonar Ping has the monitor locked - see the Sonar
+        // Ping region for why.
+        if (isPingLocked)
         {
-            if (cameraFeedViews[i] != null)
+            return;
+        }
+
+        // Guard against an out-of-range index (e.g. an Inspector typo)
+        // rather than throwing an exception mid-game.
+        if (ventFeedViews == null || ventCameraIndex < 0 || ventCameraIndex >= ventFeedViews.Length)
+        {
+            Debug.LogWarning("GameMaster.SelectVentCamera: index " + ventCameraIndex + " is out of range.");
+            return;
+        }
+
+        currentVentCameraIndex = ventCameraIndex;
+        ActivateOnlyIndex(ventFeedViews, currentVentCameraIndex);
+        RefreshAllCameraSelectButtonHighlights();
+    }
+
+    /// <summary>
+    /// Shared helper used by both SelectCamera() and SelectVentCamera():
+    /// activates only the view at indexToShow within the given array and
+    /// deactivates every other one, so only a single feed is ever visible
+    /// at a time within a layer.
+    /// </summary>
+    private void ActivateOnlyIndex(GameObject[] views, int indexToShow)
+    {
+        for (int i = 0; i < views.Length; i++)
+        {
+            if (views[i] != null)
             {
-                cameraFeedViews[i].SetActive(i == currentCameraIndex);
+                views[i].SetActive(i == indexToShow);
             }
+        }
+    }
+
+    /// <summary>
+    /// Swaps the Camera Monitor between the Facility Floorplan (regular
+    /// cameras) and the Vent Network - the "Map" button from the game
+    /// bible's Section 3C. Hook this up to mapToggleButton's OnClick.
+    /// Blocked while a Sonar Ping has the monitor locked, same as switching
+    /// cameras - the bible's "cannot lower the cameras" restriction covers
+    /// any monitor navigation, not just camera selection.
+    /// </summary>
+    public void ToggleMapView()
+    {
+        if (isPingLocked)
+        {
+            return;
+        }
+
+        isViewingVents = !isViewingVents;
+
+        // Show whichever pair of roots (selector + feed) matches the layer
+        // we just switched to, and hide the other pair.
+        SetActiveIfAssigned(regularCameraSelectorRoot, !isViewingVents);
+        SetActiveIfAssigned(regularCameraFeedRoot, !isViewingVents);
+        SetActiveIfAssigned(ventCameraSelectorRoot, isViewingVents);
+        SetActiveIfAssigned(ventCameraFeedRoot, isViewingVents);
+
+        // The very first time we switch INTO the vent layer this session,
+        // there is no previously-selected vent camera yet - show the
+        // configured default, exactly like OpenCameraMonitor() does for the
+        // regular layer's first-ever open.
+        if (isViewingVents && currentVentCameraIndex == -1)
+        {
+            SelectVentCamera(defaultVentCameraIndex);
+        }
+    }
+
+    /// <summary>Small helper to safely SetActive() a GameObject that might not be assigned yet.</summary>
+    private void SetActiveIfAssigned(GameObject targetObject, bool active)
+    {
+        if (targetObject != null)
+        {
+            targetObject.SetActive(active);
+        }
+    }
+
+    /// <summary>
+    /// Which camera index is currently on-screen, regardless of which layer
+    /// (regular or vent) is active. Used by the Sonar Ping to know which
+    /// camera it is pinging.
+    /// </summary>
+    private int GetActiveCameraIndex()
+    {
+        return isViewingVents ? currentVentCameraIndex : currentCameraIndex;
+    }
+
+    /// <summary>
+    /// Greys out (disables) the button at selectedIndex within the given
+    /// array and makes sure every OTHER button in that same array is
+    /// interactable. This is what gives the player a clear "you are already
+    /// looking at this one" indicator on the camera-select buttons. Safe to
+    /// call with a null/empty array (e.g. if you haven't wired up
+    /// regularCameraSelectButtons/ventCameraSelectButtons yet).
+    /// </summary>
+    private void HighlightSelectedButton(Button[] buttons, int selectedIndex)
+    {
+        if (buttons == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            if (buttons[i] != null)
+            {
+                buttons[i].interactable = (i != selectedIndex);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Re-applies the "currently selected camera is disabled" highlight to
+    /// BOTH layers at once (regular and vent), each using its own
+    /// remembered currentCameraIndex/currentVentCameraIndex. Called
+    /// whenever a camera is selected, and again once a Sonar Ping's lock
+    /// ends (see SetSonarLockedButtonsInteractable()) so the previously
+    /// selected buttons come back disabled instead of every button coming
+    /// back enabled. Refreshing both layers together - not just whichever
+    /// one is currently visible - means switching the Map to the other
+    /// layer always shows the correct highlight immediately, with no extra
+    /// refresh call needed in ToggleMapView().
+    /// </summary>
+    private void RefreshAllCameraSelectButtonHighlights()
+    {
+        HighlightSelectedButton(regularCameraSelectButtons, currentCameraIndex);
+        HighlightSelectedButton(ventCameraSelectButtons, currentVentCameraIndex);
+    }
+
+
+    // -------------------------------------------------------------------
+    // REGION: SONAR PING
+    // -------------------------------------------------------------------
+    [Header("Sonar Ping - References")]
+
+    [Tooltip("The Sonar Ping button, shown inside the Camera Monitor panel. Hook its OnClick to FireSonarPing().")]
+    [SerializeField] private Button sonarPingButton;
+
+    [Tooltip("A green-tinted UI Image (with a CanvasGroup component) covering the camera feed display area. Code fades its alpha 0-1-0 during a ping to simulate the sonar's illumination flash. Leave its GameObject inactive by default in the editor.")]
+    [SerializeField] private CanvasGroup sonarFlashOverlay;
+
+    [Tooltip("OPTIONAL: an AudioSource to play the ping sound effect through. Leave unassigned to skip audio for now.")]
+    [SerializeField] private AudioSource sonarPingAudioSource;
+
+    [Tooltip("OPTIONAL: the sound effect played the instant a ping fires. Only plays if both this and sonarPingAudioSource are assigned.")]
+    [SerializeField] private AudioClip sonarPingClip;
+
+    [Header("Sonar Ping - Settings")]
+
+    [Tooltip("How long (in real seconds) the monitor stays locked while a ping's illumination plays out. Game bible: 1.5 seconds.")]
+    [SerializeField] private float pingLockDurationSeconds = 1.5f;
+
+    [Tooltip("Chance (0-1) that a ping's pushback attempt succeeds against Captain Barnacle, once he exists - the game bible's 'RNG Fail State'. Not yet consumed by any animatronic; kept here so the roll is ready the moment Barnacle is implemented.")]
+    [Range(0f, 1f)]
+    [SerializeField] private float pushbackSuccessChance = 0.7f;
+
+    // True for the whole duration of a ping's illumination sequence. While
+    // true, the monitor cannot be closed and cameras/the map cannot be
+    // switched - see the isPingLocked checks throughout the Camera Monitor
+    // region above.
+    private bool isPingLocked;
+
+    // Reference to the currently-running ping sequence, if any, so
+    // HideAllPanelsAndButtons() can cleanly cancel it if the night ends
+    // mid-ping (e.g. Suffocation while a ping is in progress).
+    private Coroutine activePingCoroutine;
+
+    /// <summary>
+    /// Raised once a Sonar Ping's illumination sequence finishes playing.
+    /// This is the extension point future animatronic scripts hook into:
+    /// Captain Barnacle (once implemented) subscribes in his own OnEnable
+    /// and checks "was I the occupant of cameraIndex/isVentCamera that just
+    /// got pinged?" - if so, and pushbackRollSucceeded is true, he retreats
+    /// one camera per the game bible's Pushback/RNG Fail State rule. The
+    /// Diver ignores pushbackRollSucceeded entirely (pings only ever slow
+    /// him, per the bible) but can still listen for when a ping happens.
+    ///
+    /// This is a STATIC event (rather than an instance one) because there
+    /// is exactly one GameMaster in the scene - any future animatronic
+    /// script can subscribe to GameMaster.OnSonarPing without needing a
+    /// scene reference to find this object first.
+    ///
+    /// Nothing subscribes to this yet, since no animatronics exist - firing
+    /// a ping today still does all of its heat/lock/visual/audio work, it
+    /// just raises this event into the void afterwards.
+    /// </summary>
+    public static event System.Action<int, bool, bool> OnSonarPing;
+    // Event parameters, in order:
+    //   int  cameraIndex           - GetActiveCameraIndex() at the moment the ping fired.
+    //   bool isVentCamera          - true if that camera was on the Vent Network layer.
+    //   bool pushbackRollSucceeded - the result of this ping's pushbackSuccessChance roll.
+
+    /// <summary>
+    /// Fires a Sonar Ping on whichever camera is currently on-screen. Hook
+    /// this up to sonarPingButton's OnClick. Does nothing if the monitor
+    /// isn't open, a ping is already playing, or the Sonar is overheated.
+    /// </summary>
+    public void FireSonarPing()
+    {
+        if (!isCameraPanelOpen || isPingLocked || isSonarOverheated)
+        {
+            return;
+        }
+
+        activePingCoroutine = StartCoroutine(SonarPingRoutine());
+    }
+
+    /// <summary>
+    /// Runs the full timed sequence for a single Sonar Ping: locks the
+    /// monitor, fades the green illumination overlay in and back out over
+    /// pingLockDurationSeconds, plays the ping sound effect, registers the
+    /// ping against the Sonar Overheat counter, rolls the pushback RNG, and
+    /// finally raises OnSonarPing before unlocking the monitor again.
+    /// </summary>
+    private IEnumerator SonarPingRoutine()
+    {
+        isPingLocked = true;
+        SetSonarLockedButtonsInteractable(false);
+
+        // The remaining-charge meter is only ever on-screen while a ping is
+        // actually playing - show it now, hide it again once this routine
+        // finishes below.
+        if (sonarHeatMeter != null)
+        {
+            sonarHeatMeter.gameObject.SetActive(true);
+        }
+
+        // Remember which camera we are pinging BEFORE anything below has a
+        // chance to change it (it can't while locked, but this keeps the
+        // intent explicit rather than reading GetActiveCameraIndex() again
+        // after the wait below).
+        int pingedCameraIndex = GetActiveCameraIndex();
+        bool pingedIsVentCamera = isViewingVents;
+
+        // Play the ping sound effect immediately, if one is assigned.
+        if (sonarPingAudioSource != null && sonarPingClip != null)
+        {
+            sonarPingAudioSource.PlayOneShot(sonarPingClip);
+        }
+
+        // A ping always costs against the Overheat counter, whether or not
+        // it ends up overheating the Sonar this time.
+        RegisterPingForOverheat();
+
+        // Roll now whether the (future) pushback attempt succeeds. Rolling
+        // it here, once per ping, means the result is ready and consistent
+        // by the time OnSonarPing is raised below.
+        bool pushbackRollSucceeded = Random.value <= pushbackSuccessChance;
+
+        // Fade the green illumination overlay in for the first half of the
+        // lock duration, then back out for the second half - a simple
+        // triangle fade that is easy to follow and needs no extra library.
+        float halfDuration = pingLockDurationSeconds / 2f;
+
+        if (sonarFlashOverlay != null)
+        {
+            sonarFlashOverlay.gameObject.SetActive(true);
+            sonarFlashOverlay.alpha = 0f;
+        }
+
+        float elapsed = 0f;
+        while (elapsed < halfDuration)
+        {
+            elapsed += Time.deltaTime;
+            if (sonarFlashOverlay != null)
+            {
+                sonarFlashOverlay.alpha = Mathf.Clamp01(elapsed / halfDuration);
+            }
+            yield return null;
+        }
+
+        elapsed = 0f;
+        while (elapsed < halfDuration)
+        {
+            elapsed += Time.deltaTime;
+            if (sonarFlashOverlay != null)
+            {
+                sonarFlashOverlay.alpha = 1f - Mathf.Clamp01(elapsed / halfDuration);
+            }
+            yield return null;
+        }
+
+        if (sonarFlashOverlay != null)
+        {
+            sonarFlashOverlay.alpha = 0f;
+            sonarFlashOverlay.gameObject.SetActive(false);
+        }
+
+        // Tell anything listening (future animatronics) that a ping just
+        // resolved against pingedCameraIndex/pingedIsVentCamera.
+        OnSonarPing?.Invoke(pingedCameraIndex, pingedIsVentCamera, pushbackRollSucceeded);
+
+        isPingLocked = false;
+        activePingCoroutine = null;
+        SetSonarLockedButtonsInteractable(true);
+
+        if (sonarHeatMeter != null)
+        {
+            sonarHeatMeter.gameObject.SetActive(false);
+        }
+    }
+
+    /// <summary>
+    /// Enables/disables every button that the game bible's "UI Lock" rule
+    /// says should be unusable while a ping is playing: the Map toggle and
+    /// every camera-select button on both layers (if their optional arrays
+    /// were assigned). The Sonar Ping button itself is handled separately
+    /// by the Overheat system below, since it can also be disabled for a
+    /// completely different reason (overheating).
+    /// </summary>
+    private void SetSonarLockedButtonsInteractable(bool interactable)
+    {
+        // The Ping button also greys itself out for the duration of its own
+        // lock window, so it visibly reflects "busy" rather than looking
+        // clickable while clicks are actually being ignored.
+        if (sonarPingButton != null)
+        {
+            sonarPingButton.interactable = interactable;
+        }
+
+        if (mapToggleButton != null)
+        {
+            mapToggleButton.interactable = interactable;
+        }
+
+        if (interactable)
+        {
+            // Re-enabling after a ping: restore each layer's own "currently
+            // selected camera" highlight rather than blanket-enabling every
+            // button - otherwise the camera we're actually looking at would
+            // wrongly become clickable again.
+            RefreshAllCameraSelectButtonHighlights();
+        }
+        else
+        {
+            // Locking for a ping: every camera button goes fully
+            // non-interactable regardless of selection - nothing can be
+            // clicked at all while the monitor is locked.
+            SetButtonArrayInteractable(regularCameraSelectButtons, false);
+            SetButtonArrayInteractable(ventCameraSelectButtons, false);
+        }
+    }
+
+    /// <summary>Small helper that safely sets .interactable on every Button in an (optionally null/empty) array.</summary>
+    private void SetButtonArrayInteractable(Button[] buttons, bool interactable)
+    {
+        if (buttons == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            if (buttons[i] != null)
+            {
+                buttons[i].interactable = interactable;
+            }
+        }
+    }
+
+
+    // -------------------------------------------------------------------
+    // REGION: SONAR OVERHEAT
+    // -------------------------------------------------------------------
+    [Header("Sonar Overheat - References")]
+
+    [Tooltip("OPTIONAL: the 'SONAR REBOOTING' text shown in place of the Sonar Ping button while overheated. Should start inactive - code activates it the instant an overheat begins and deactivates it the instant the reboot finishes.")]
+    [SerializeField] private TMP_Text sonarRebootingText;
+
+    [Tooltip("OPTIONAL: a Slider (0-1, same pattern as the Oxygen slider) visualizing the Sonar's REMAINING charge - full at 1 right after a reboot, draining toward 0 as pings are fired. Only shown while a ping is actively playing; hidden the rest of the time. Leave unassigned to skip this visual for now.")]
+    [SerializeField] private Slider sonarHeatMeter;
+
+    [Header("Sonar Overheat - Settings")]
+
+    [Tooltip("The lowest possible number of pings the Sonar can fire before overheating. Each reboot re-rolls a new random value between this and sonarOverheatCapacityMaxPings, matching the game bible's 'random maximum usage limit'.")]
+    [SerializeField] private int sonarOverheatCapacityMinPings = 4;
+
+    [Tooltip("The highest possible number of pings the Sonar can fire before overheating.")]
+    [SerializeField] private int sonarOverheatCapacityMaxPings = 7;
+
+    [Tooltip("How long (in real seconds) the Sonar stays offline after overheating before it automatically reboots. Runs even while the Camera Monitor is closed, matching the game bible's 'reboots automatically over time'.")]
+    [SerializeField] private float sonarRebootSeconds = 8f;
+
+    // How many pings this random cap allows before the Sonar overheats.
+    // Re-rolled in Start() and again every time the Sonar finishes
+    // rebooting - see RollNewOverheatCapacity().
+    private int currentOverheatCapacityPings;
+
+    // How many pings have been fired since the Sonar last came online.
+    // Resets to 0 whenever a new capacity is rolled.
+    private int pingsFiredSinceLastReboot;
+
+    // True while the Sonar is offline recovering from an overheat. The
+    // Sonar Ping button is hidden and sonarRebootingText is shown for the
+    // whole time this is true.
+    private bool isSonarOverheated;
+
+    // Counts down from sonarRebootSeconds while isSonarOverheated is true.
+    // Once it reaches zero, the Sonar comes back online automatically.
+    private float overheatRebootTimer;
+
+    /// <summary>
+    /// Rolls a fresh random overheat capacity between
+    /// sonarOverheatCapacityMinPings and sonarOverheatCapacityMaxPings
+    /// (inclusive) and resets the ping counter back to zero. Called once at
+    /// the start of the night and again every time the Sonar finishes
+    /// rebooting, so every "life" of the Sonar gets its own random limit.
+    /// </summary>
+    private void RollNewOverheatCapacity()
+    {
+        // Random.Range(int, int) treats the upper bound as EXCLUSIVE, so we
+        // add 1 to make sonarOverheatCapacityMaxPings itself reachable.
+        currentOverheatCapacityPings = Random.Range(sonarOverheatCapacityMinPings, sonarOverheatCapacityMaxPings + 1);
+        pingsFiredSinceLastReboot = 0;
+        UpdateSonarHeatMeterUI();
+    }
+
+    /// <summary>
+    /// Counts one ping against the Overheat capacity and triggers an
+    /// overheat if the cap has just been reached. Called once per fired
+    /// ping from SonarPingRoutine(), regardless of whether that ping ends
+    /// up overheating the Sonar.
+    /// </summary>
+    private void RegisterPingForOverheat()
+    {
+        pingsFiredSinceLastReboot++;
+
+        if (pingsFiredSinceLastReboot >= currentOverheatCapacityPings)
+        {
+            TriggerSonarOverheat();
+        }
+
+        UpdateSonarHeatMeterUI();
+    }
+
+    /// <summary>
+    /// Puts the Sonar offline: hides the Ping button, shows the "SONAR
+    /// REBOOTING" text in its place, and starts the reboot countdown.
+    /// </summary>
+    private void TriggerSonarOverheat()
+    {
+        isSonarOverheated = true;
+        overheatRebootTimer = sonarRebootSeconds;
+
+        SetButtonVisible(sonarPingButton != null ? sonarPingButton.gameObject : null, false);
+        if (sonarRebootingText != null)
+        {
+            sonarRebootingText.gameObject.SetActive(true);
+        }
+    }
+
+    /// <summary>
+    /// Counts down the reboot timer while the Sonar is overheated. Called
+    /// every frame from Update() regardless of whether the Camera Monitor
+    /// is even open, so the Sonar keeps recovering in the background - the
+    /// game bible specifies it "reboots automatically over time". Once the
+    /// timer reaches zero, the Sonar comes back online with a freshly
+    /// rolled overheat capacity and the Ping button reappears in place of
+    /// the "SONAR REBOOTING" text.
+    /// </summary>
+    private void UpdateSonarOverheatCooldown(float deltaTime)
+    {
+        if (!isSonarOverheated)
+        {
+            return;
+        }
+
+        overheatRebootTimer -= deltaTime;
+        if (overheatRebootTimer <= 0f)
+        {
+            isSonarOverheated = false;
+            RollNewOverheatCapacity();
+
+            if (sonarRebootingText != null)
+            {
+                sonarRebootingText.gameObject.SetActive(false);
+            }
+            SetButtonVisible(sonarPingButton != null ? sonarPingButton.gameObject : null, true);
+        }
+    }
+
+    /// <summary>
+    /// Refreshes the optional Sonar Heat slider, if one is assigned. Reads as
+    /// REMAINING charge rather than heat built up: 1 (full) right after a
+    /// reboot, counting down to 0 as pings are fired, reaching 0 exactly on
+    /// the ping that overheats the Sonar.
+    /// </summary>
+    private void UpdateSonarHeatMeterUI()
+    {
+        if (sonarHeatMeter != null && currentOverheatCapacityPings > 0)
+        {
+            sonarHeatMeter.value = 1f - (float)pingsFiredSinceLastReboot / currentOverheatCapacityPings;
         }
     }
 
@@ -685,6 +1261,25 @@ public class GameMaster : MonoBehaviour
         isMaintenancePanelOpen = false;
         isCameraPanelOpen = false;
         isReleasingPressure = false;
+
+        // If a Sonar Ping happened to be mid-flight when the night ended
+        // (e.g. Suffocation while the green flash was still playing), cancel
+        // it so its overlay doesn't stay stuck visible under the end screen.
+        if (activePingCoroutine != null)
+        {
+            StopCoroutine(activePingCoroutine);
+            activePingCoroutine = null;
+        }
+        isPingLocked = false;
+        if (sonarFlashOverlay != null)
+        {
+            sonarFlashOverlay.alpha = 0f;
+            sonarFlashOverlay.gameObject.SetActive(false);
+        }
+        if (sonarHeatMeter != null)
+        {
+            sonarHeatMeter.gameObject.SetActive(false);
+        }
     }
 
 
@@ -732,6 +1327,24 @@ public class GameMaster : MonoBehaviour
         lightsOn = true;
         isReleasingPressure = false;
 
+        // Every night starts on the Facility Floorplan layer, with neither
+        // layer having a remembered camera selection yet.
+        isViewingVents = false;
+        currentCameraIndex = -1;
+        currentVentCameraIndex = -1;
+        SetActiveIfAssigned(regularCameraSelectorRoot, true);
+        SetActiveIfAssigned(regularCameraFeedRoot, true);
+        SetActiveIfAssigned(ventCameraSelectorRoot, false);
+        SetActiveIfAssigned(ventCameraFeedRoot, false);
+
+        // The Sonar starts cold (no pings fired yet) and online, with a
+        // fresh random overheat capacity for the night.
+        isSonarOverheated = false;
+        RollNewOverheatCapacity();
+        SetButtonVisible(sonarPingButton != null ? sonarPingButton.gameObject : null, true);
+        if (sonarRebootingText != null) sonarRebootingText.gameObject.SetActive(false);
+        if (sonarHeatMeter != null) sonarHeatMeter.gameObject.SetActive(false);
+
         // The night is now live.
         currentState = GameState.Playing;
 
@@ -770,6 +1383,11 @@ public class GameMaster : MonoBehaviour
 
         UpdateClock(Time.deltaTime);
         UpdateOxygen(Time.deltaTime);
+
+        // The Sonar's reboot timer keeps counting down even while the
+        // Camera Monitor is closed - see UpdateSonarOverheatCooldown()'s
+        // comment for why.
+        UpdateSonarOverheatCooldown(Time.deltaTime);
 
         // You can only look around the office while no panel is covering
         // the view - the Maintenance Panel and Camera Monitor both take
