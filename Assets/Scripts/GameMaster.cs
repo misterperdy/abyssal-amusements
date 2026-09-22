@@ -205,6 +205,18 @@ public class GameMaster : MonoBehaviour
     [Tooltip("The Transform that holds the office SpriteRenderer(s). This is the object that physically moves left/right as the player looks around.")]
     [SerializeField] private Transform officeViewRoot;
 
+    [Tooltip("The SpriteRenderer showing the office image. Its sprite is swapped between the normal ('lit') and Office Dim Sprite below whenever the lights are toggled.")]
+    [SerializeField] private SpriteRenderer officeSpriteRenderer;
+
+    [Tooltip("The sprite to show while the lights are OFF. Leave unassigned until you have this art - the office will simply keep showing its normal sprite instead of going blank. The 'lit' sprite is captured automatically from whatever officeSpriteRenderer is showing at the start of the night, so you don't need to assign that one separately.")]
+    [SerializeField] private Sprite officeDimSprite;
+
+    // The office's normal sprite, captured once in Start() from whatever
+    // officeSpriteRenderer already shows - mirrors how officeViewCenterPosition
+    // below is captured, so the user doesn't have to redundantly re-assign
+    // a sprite that's already sitting right there in the scene.
+    private Sprite officeLitSprite;
+
     [Tooltip("Drag the scene's main Canvas here. We use its RectTransform to resolve the cursor's screen position reliably (the same way Unity's UI already hit-tests buttons correctly), instead of dividing Input.mousePosition by Screen.width directly, which can drift out of sync with the Canvas's real pixel size after the Game View is resized/docked or under Editor DPI scaling.")]
     [SerializeField] private RectTransform canvasRectTransform;
 
@@ -293,11 +305,33 @@ public class GameMaster : MonoBehaviour
         bool reachedFarLeft = currentPanOffset >= maxPanDistance - edgeArrivalTolerance;
         SetButtonVisible(maintenanceOpenButton, reachedFarLeft);
 
-        // Same idea for the Camera button on the right, AND only while the
-        // lights are on (game bible: the Camera Monitor is disabled while
-        // the lights are off).
-        bool reachedFarRight = currentPanOffset <= -maxPanDistance + edgeArrivalTolerance;
-        SetButtonVisible(cameraOpenButton, reachedFarRight && lightsOn);
+        // The Camera button's visibility has its own rules (light-gated, with
+        // a playtest bypass) - see RefreshCameraButtonVisibility() in the
+        // Camera Monitor region for the single place that decides this.
+        RefreshCameraButtonVisibility();
+    }
+
+    /// <summary>
+    /// Swaps the office's sprite to match the current light state. Called
+    /// from ToggleLights() whenever the lights are switched. Safe
+    /// to call even before officeDimSprite has any art assigned yet - it
+    /// simply leaves the lit sprite showing instead of going blank.
+    /// </summary>
+    private void UpdateOfficeSpriteForLights()
+    {
+        if (officeSpriteRenderer == null)
+        {
+            return;
+        }
+
+        if (lightsOn)
+        {
+            officeSpriteRenderer.sprite = officeLitSprite;
+        }
+        else if (officeDimSprite != null)
+        {
+            officeSpriteRenderer.sprite = officeDimSprite;
+        }
     }
 
     /// <summary>Small helper to safely show/hide a button GameObject that might not be assigned yet.</summary>
@@ -318,11 +352,8 @@ public class GameMaster : MonoBehaviour
     [Tooltip("The single button that appears at the far-left edge. It doubles as both the open AND close button for the Maintenance Panel, and stays visible the whole time the panel is open.")]
     [SerializeField] private GameObject maintenanceOpenButton;
 
-    [Tooltip("The Maintenance Panel itself (Release Pressure + Lights toggle). Should start inactive.")]
+    [Tooltip("The Maintenance Panel itself (Release Pressure + Lights button). Should start inactive.")]
     [SerializeField] private GameObject maintenancePanel;
-
-    [Tooltip("The Toggle switch inside the Maintenance Panel that controls the office lights.")]
-    [SerializeField] private Toggle lightsToggle;
 
     [Tooltip("The Release Pressure button inside the Maintenance Panel. Its Interactable state is controlled by the lights (disabled while lights are off).")]
     [SerializeField] private Button releasePressureButton;
@@ -386,12 +417,23 @@ public class GameMaster : MonoBehaviour
     }
 
     /// <summary>
-    /// Called whenever the lights Toggle changes value. Hook this up to the
-    /// Toggle's OnValueChanged(bool) event in the Inspector.
+    /// Flips the office lights on/off. Hook this up to the Lights button's
+    /// OnClick in the Inspector - one button both turns the lights off and
+    /// back on, the same click-to-toggle pattern already used by the
+    /// Maintenance/Camera edge buttons (see ToggleMaintenancePanel() and
+    /// ToggleCameraMonitor()).
+    ///
+    /// This is deliberately a PARAMETERLESS method rather than one taking a
+    /// bool: a plain Button's OnClick has no live value to pass, so wiring
+    /// it to a method with a bool parameter forces you to set a FIXED value
+    /// in the Inspector - meaning every click would send that same fixed
+    /// value forever, which is exactly the "lights never turn back on" bug
+    /// this replaced. By flipping our own lightsOn field internally, a
+    /// plain no-argument Button click is all that's needed.
     /// </summary>
-    public void OnLightsToggleChanged(bool isOn)
+    public void ToggleLights()
     {
-        lightsOn = isOn;
+        lightsOn = !lightsOn;
 
         // Game bible: "While lights are off, the Camera Monitor and Release
         // Pressure buttons are disabled." Enforce that here in one place.
@@ -409,17 +451,23 @@ public class GameMaster : MonoBehaviour
 
         // If the lights were just turned off while the Camera Monitor
         // happens to be open, force it closed - it isn't allowed to be open
-        // without lights. We also hide its button here: normally the button
-        // stays visible as long as the panel is open (since it doubles as
-        // the close button), but this is a forced close the player didn't
-        // click, so nothing else will hide it for us. Once the player looks
-        // away from and back to the right edge, UpdateLookAndEdgeButtons()
-        // will correctly manage its visibility again.
-        if (!lightsOn && isCameraPanelOpen)
+        // without lights (unless hideCameraButtonWhileLightsAreDim has been
+        // turned off for playtesting, in which case this restriction doesn't
+        // apply at all).
+        bool cameraRestrictedRightNow = !lightsOn && hideCameraButtonWhileLightsAreDim;
+        if (cameraRestrictedRightNow && isCameraPanelOpen)
         {
             CloseCameraMonitor();
-            SetButtonVisible(cameraOpenButton, false);
         }
+
+        // Match the office's sprite to the new light state.
+        UpdateOfficeSpriteForLights();
+
+        // Re-evaluate the Camera button's visibility right now, rather than
+        // waiting for UpdateLookAndEdgeButtons() to eventually get around to
+        // it - this is what guarantees the button reliably comes back the
+        // instant the lights are turned back on.
+        RefreshCameraButtonVisibility();
     }
 
     /// <summary>
@@ -464,6 +512,11 @@ public class GameMaster : MonoBehaviour
     [Tooltip("Placeholder views for each camera feed, in the same order as the camera buttons you will build. Only one is shown at a time. Leave empty until you add camera art.")]
     [SerializeField] private GameObject[] cameraFeedViews;
 
+    [Header("Camera Monitor - Settings")]
+
+    [Tooltip("When checked (default, matches the game bible), the Camera Monitor button is hidden and cannot be opened while the lights are off. Uncheck during playtesting if you want to reach the camera screen regardless of light state.")]
+    [SerializeField] private bool hideCameraButtonWhileLightsAreDim = true;
+
     // True while the Camera Monitor is open and covering the view.
     private bool isCameraPanelOpen;
 
@@ -494,7 +547,9 @@ public class GameMaster : MonoBehaviour
     /// <summary>Internal helper that actually opens the panel. Use ToggleCameraMonitor() from the Inspector instead of this directly.</summary>
     private void OpenCameraMonitor()
     {
-        if (!lightsOn)
+        // Blocked while lights are off, UNLESS hideCameraButtonWhileLightsAreDim
+        // has been turned off for playtesting.
+        if (!lightsOn && hideCameraButtonWhileLightsAreDim)
         {
             return;
         }
@@ -519,6 +574,38 @@ public class GameMaster : MonoBehaviour
         {
             cameraPanel.SetActive(false);
         }
+    }
+
+    /// <summary>
+    /// Single source of truth for whether the Camera Monitor's edge button
+    /// should currently be visible. Called every frame from
+    /// UpdateLookAndEdgeButtons() while free-looking, AND immediately from
+    /// ToggleLights() - calling it from both places is what
+    /// guarantees the button reliably reappears the instant the lights come
+    /// back on, rather than depending on the pan state happening to line up
+    /// again on its own.
+    /// </summary>
+    private void RefreshCameraButtonVisibility()
+    {
+        // Don't touch it while a panel covers the screen. If the Camera
+        // Monitor itself is open, this button doubles as its close button
+        // and must stay visible/untouched here. If the Maintenance Panel is
+        // open, UpdateLookAndEdgeButtons() isn't running pan logic at all,
+        // so there's no meaningful "current position" to check yet - it'll
+        // be correctly resolved the moment that panel closes.
+        if (isMaintenancePanelOpen || isCameraPanelOpen)
+        {
+            return;
+        }
+
+        bool reachedFarRight = currentPanOffset <= -maxPanDistance + edgeArrivalTolerance;
+
+        // Per the game bible, the Camera Monitor is normally unavailable
+        // while the lights are off - hideCameraButtonWhileLightsAreDim lets
+        // you bypass that restriction during playtesting.
+        bool cameraCurrentlyAllowed = lightsOn || !hideCameraButtonWhileLightsAreDim;
+
+        SetButtonVisible(cameraOpenButton, reachedFarRight && cameraCurrentlyAllowed);
     }
 
     /// <summary>
@@ -613,6 +700,14 @@ public class GameMaster : MonoBehaviour
         if (officeViewRoot != null)
         {
             officeViewCenterPosition = officeViewRoot.localPosition;
+        }
+
+        // Remember whatever sprite is already showing as the "lit" sprite,
+        // so UpdateOfficeSpriteForLights() can swap back to it later without
+        // needing it separately assigned in the Inspector.
+        if (officeSpriteRenderer != null)
+        {
+            officeLitSprite = officeSpriteRenderer.sprite;
         }
 
         // Start looking straight ahead, with no scroll destination committed yet.

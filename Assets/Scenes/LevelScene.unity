@@ -838,8 +838,8 @@ MonoBehaviour:
       m_Calls:
       - m_Target: {fileID: 1471672201}
         m_TargetAssemblyTypeName: GameMaster, Assembly-CSharp
-        m_MethodName: OnLightsToggleChanged
-        m_Mode: 6
+        m_MethodName: ToggleLights
+        m_Mode: 1
         m_Arguments:
           m_ObjectArgument: {fileID: 0}
           m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
@@ -2661,6 +2661,8 @@ MonoBehaviour:
   releasePressureDrainPerSecond: 8
   hypoxiaThresholdPercent: 50
   officeViewRoot: {fileID: 1660598820}
+  officeSpriteRenderer: {fileID: 1660598821}
+  officeDimSprite: {fileID: 21300000, guid: 2f129c66a929dac42bec66303cf49d6e, type: 3}
   canvasRectTransform: {fileID: 62665907}
   maxPanDistance: 5
   panZoneThreshold: 0.3
@@ -2668,11 +2670,11 @@ MonoBehaviour:
   edgeArrivalTolerance: 0.05
   maintenanceOpenButton: {fileID: 1422696500}
   maintenancePanel: {fileID: 936112583}
-  lightsToggle: {fileID: 0}
   releasePressureButton: {fileID: 429597254}
   cameraOpenButton: {fileID: 1587617964}
   cameraPanel: {fileID: 1414947860}
   cameraFeedViews: []
+  hideCameraButtonWhileLightsAreDim: 1
   victoryScreen: {fileID: 1258078265}
   gameOverScreen: {fileID: 2011275742}
 --- !u!4 &1471672202
