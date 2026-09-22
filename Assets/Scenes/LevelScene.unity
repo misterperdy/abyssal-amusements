@@ -2716,7 +2716,7 @@ MonoBehaviour:
       m_Calls: []
   m_text: 'SONAR
 
-    REBOOTNG!'
+    REBOOTING!'
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 29eb2b6702da4df4a94ad2d6c6a115a2, type: 2}
   m_sharedMaterial: {fileID: 7041377394848298371, guid: 29eb2b6702da4df4a94ad2d6c6a115a2, type: 2}
@@ -2743,8 +2743,8 @@ MonoBehaviour:
   m_faceColor:
     serializedVersion: 2
     rgba: 4294967295
-  m_fontSize: 29.7
-  m_fontSizeBase: 29.7
+  m_fontSize: 26.75
+  m_fontSizeBase: 26.75
   m_fontWeight: 400
   m_enableAutoSizing: 0
   m_fontSizeMin: 18
