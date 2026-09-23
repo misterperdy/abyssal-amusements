@@ -380,6 +380,14 @@ public class GameMaster : MonoBehaviour
     // always begins with the lights on.
     private bool lightsOn = true;
 
+    /// <summary>
+    /// Read-only access to whether the office lights are currently on.
+    /// Added so The Diver can poll the lights every frame while he is at
+    /// the Window or inside the office (turning the lights off is how the
+    /// player hides from him) without needing a public setter.
+    /// </summary>
+    public bool LightsOn => lightsOn;
+
     // True for as long as the player is physically holding down the
     // Release Pressure button.
     private bool isReleasingPressure;
@@ -612,6 +620,49 @@ public class GameMaster : MonoBehaviour
     // them right now (e.g. he's waiting at the Window or the Door). Kept
     // up to date exclusively via SetCaptainBarnacleCameraIndex() below.
     private int barnacleCameraIndex = -1;
+
+    [Header("Camera Monitor - The Diver Occupancy Sprites")]
+    // The Diver only ever shows up on ONE regular camera (CAM 05) and ONE
+    // vent camera (CAM 08), so unlike Barnacle's per-camera arrays above,
+    // these are single sprites. Any of them left unassigned simply falls
+    // back to that camera's normal empty-room art instead of a white box.
+
+    [Tooltip("CAM 05 with The Diver in it (Barnacle NOT there).")]
+    [SerializeField] private Sprite diverOccupiedCameraSprite;
+
+    [Tooltip("CAM 05 with The Diver in it (Barnacle NOT there), while a Sonar Ping is flashing the room.")]
+    [SerializeField] private Sprite diverOccupiedLitCameraSprite;
+
+    [Tooltip("CAM 05 with BOTH The Diver and Captain Barnacle in it.")]
+    [SerializeField] private Sprite diverAndBarnacleCameraSprite;
+
+    [Tooltip("CAM 05 with BOTH The Diver and Captain Barnacle in it, while a Sonar Ping is flashing the room.")]
+    [SerializeField] private Sprite diverAndBarnacleLitCameraSprite;
+
+    [Tooltip("CAM 08 (the vent camera) with The Diver in it.")]
+    [SerializeField] private Sprite diverOccupiedVentCameraSprite;
+
+    // Which regular camera (0-6) The Diver currently occupies, or -1 if he
+    // isn't on any regular camera right now. Kept up to date exclusively
+    // via SetDiverCameraIndex() below. Mirrors barnacleCameraIndex.
+    private int diverCameraIndex = -1;
+
+    // Which VENT camera (an index into ventFeedViews) The Diver currently
+    // occupies, or -1 if he isn't on any vent camera right now. Kept up to
+    // date exclusively via SetDiverVentCameraIndex() below.
+    private int diverVentCameraIndex = -1;
+
+    // Which regular camera (0-6) is currently mid Sonar Ping flash, or -1
+    // if no flash is playing. RefreshCameraFeedSprite() reads this to pick
+    // the "lit" variant of whichever occupant sprite applies, so the lit
+    // look is decided in the same single place as everything else.
+    private int sonarLitCameraIndex = -1;
+
+    // The vent-layer equivalents of cameraFeedImageComponents and
+    // originalCameraFeedSprites above - cached in Awake() the same way, so
+    // The Diver's CAM 08 sprite can be swapped in and back out again.
+    private Image[] ventFeedImageComponents;
+    private Sprite[] originalVentFeedSprites;
 
     [Header("Camera Monitor - Map / Vent Layer References")]
     // The Camera Monitor has two parallel "layers", exactly like FNAF3's
@@ -906,6 +957,18 @@ public class GameMaster : MonoBehaviour
     }
 
     /// <summary>
+    /// True if the player is looking at this exact camera on the Camera
+    /// Monitor right now: the monitor is open, the correct layer (regular or
+    /// vent) is showing, and that layer's selected camera is cameraIndex.
+    /// Used by The Diver, who fails every movement opportunity while the
+    /// player is watching him.
+    /// </summary>
+    public bool IsPlayerWatchingCamera(int cameraIndex, bool isVentCamera)
+    {
+        return isCameraPanelOpen && isViewingVents == isVentCamera && GetActiveCameraIndex() == cameraIndex;
+    }
+
+    /// <summary>
     /// Called by CaptainBarnacle every time his location changes, so
     /// GameMaster (which owns every camera sprite) can keep each affected
     /// camera's visible art in sync. Pass the 0-based camera index he just
@@ -932,14 +995,64 @@ public class GameMaster : MonoBehaviour
     }
 
     /// <summary>
-    /// Sets camera feed index's Image to whichever sprite currently
-    /// matches reality: Captain Barnacle's "occupied" sprite if he is the
-    /// current occupant of this camera, otherwise back to that camera's
-    /// original empty-room sprite. This is the single source of truth for
-    /// a camera's NON-sonar-flash appearance - Sonar Ping's transient "lit"
-    /// sprite is applied/cleared separately in SonarPingRoutine() below,
-    /// since that is a short-lived visual tied to the flash animation, not
-    /// to who currently occupies the room.
+    /// Called by TheDiver every time he arrives on or leaves a REGULAR
+    /// camera. Works exactly like SetCaptainBarnacleCameraIndex() above:
+    /// pass the 0-based camera index he's now on (CAM 05 = 4), or -1 if he
+    /// is no longer on any regular camera. Refreshes both the camera he left
+    /// and the one he arrived at, immediately.
+    /// </summary>
+    public void SetDiverCameraIndex(int cameraIndex)
+    {
+        int previousIndex = diverCameraIndex;
+        diverCameraIndex = cameraIndex;
+
+        if (previousIndex != -1)
+        {
+            RefreshCameraFeedSprite(previousIndex);
+        }
+
+        if (cameraIndex != -1)
+        {
+            RefreshCameraFeedSprite(cameraIndex);
+        }
+    }
+
+    /// <summary>
+    /// The vent-layer version of SetDiverCameraIndex(): pass the index into
+    /// ventFeedViews he's now on (CAM 08 = 0), or -1 if he is no longer on
+    /// any vent camera. Refreshes both the vent camera he left and the one
+    /// he arrived at, immediately.
+    /// </summary>
+    public void SetDiverVentCameraIndex(int ventCameraIndex)
+    {
+        int previousIndex = diverVentCameraIndex;
+        diverVentCameraIndex = ventCameraIndex;
+
+        if (previousIndex != -1)
+        {
+            RefreshVentFeedSprite(previousIndex);
+        }
+
+        if (ventCameraIndex != -1)
+        {
+            RefreshVentFeedSprite(ventCameraIndex);
+        }
+    }
+
+    /// <summary>
+    /// Sets regular camera feed cameraIndex's Image to whichever sprite
+    /// currently matches reality. This is the SINGLE source of truth for
+    /// what a regular camera looks like, and it works as a small decision
+    /// table based on who is in the room and whether a Sonar Ping is
+    /// flashing it right now (sonarLitCameraIndex):
+    ///
+    ///   Diver + Barnacle -> diverAndBarnacle sprite (or its lit variant)
+    ///   Diver only       -> diverOccupied sprite    (or its lit variant)
+    ///   Barnacle only    -> barnacleOccupied sprite (or its lit variant)
+    ///   Nobody           -> the room's original empty sprite
+    ///
+    /// Any chosen sprite that hasn't been assigned in the Inspector yet
+    /// falls back to the empty-room sprite rather than showing a white box.
     /// </summary>
     private void RefreshCameraFeedSprite(int cameraIndex)
     {
@@ -954,8 +1067,54 @@ public class GameMaster : MonoBehaviour
             return;
         }
 
-        bool occupiedByBarnacle = (cameraIndex == barnacleCameraIndex);
-        image.sprite = occupiedByBarnacle ? barnacleOccupiedCameraSprites[cameraIndex] : originalCameraFeedSprites[cameraIndex];
+        bool barnacleHere = (cameraIndex == barnacleCameraIndex);
+        bool diverHere = (cameraIndex == diverCameraIndex);
+        bool lit = (cameraIndex == sonarLitCameraIndex);
+
+        Sprite chosenSprite;
+        if (diverHere && barnacleHere)
+        {
+            chosenSprite = lit ? diverAndBarnacleLitCameraSprite : diverAndBarnacleCameraSprite;
+        }
+        else if (diverHere)
+        {
+            chosenSprite = lit ? diverOccupiedLitCameraSprite : diverOccupiedCameraSprite;
+        }
+        else if (barnacleHere)
+        {
+            Sprite[] barnacleSprites = lit ? barnacleOccupiedLitCameraSprites : barnacleOccupiedCameraSprites;
+            chosenSprite = (barnacleSprites != null && cameraIndex < barnacleSprites.Length) ? barnacleSprites[cameraIndex] : null;
+        }
+        else
+        {
+            chosenSprite = null; // Nobody here - the fallback below shows the empty room.
+        }
+
+        image.sprite = (chosenSprite != null) ? chosenSprite : originalCameraFeedSprites[cameraIndex];
+    }
+
+    /// <summary>
+    /// The vent-layer version of RefreshCameraFeedSprite(): shows The
+    /// Diver's vent sprite if he occupies this vent camera, otherwise the
+    /// vent camera's original empty sprite. There is no Sonar "lit" variant
+    /// for vent cameras - the green flash overlay still plays on top.
+    /// </summary>
+    private void RefreshVentFeedSprite(int ventCameraIndex)
+    {
+        if (ventFeedImageComponents == null || ventCameraIndex < 0 || ventCameraIndex >= ventFeedImageComponents.Length)
+        {
+            return;
+        }
+
+        Image image = ventFeedImageComponents[ventCameraIndex];
+        if (image == null)
+        {
+            return;
+        }
+
+        bool diverHere = (ventCameraIndex == diverVentCameraIndex);
+        Sprite chosenSprite = diverHere ? diverOccupiedVentCameraSprite : null;
+        image.sprite = (chosenSprite != null) ? chosenSprite : originalVentFeedSprites[ventCameraIndex];
     }
 
     /// <summary>
@@ -1129,19 +1288,16 @@ public class GameMaster : MonoBehaviour
         // OnSonarPing firing later to know exactly when to swap back.
         OnSonarPingStarted?.Invoke(pingedCameraIndex, pingedIsVentCamera);
 
-        // If Captain Barnacle is the one occupying the pinged camera, swap
-        // straight to his "occupied + lit" sprite for the duration of the
-        // flash below - handled directly here (rather than making Barnacle
-        // react to OnSonarPingStarted) since GameMaster already owns every
-        // camera sprite and already knows who is where via
-        // SetCaptainBarnacleCameraIndex().
-        if (!pingedIsVentCamera && pingedCameraIndex == barnacleCameraIndex && pingedCameraIndex != -1)
+        // Mark the pinged regular camera as "lit" for the duration of the
+        // flash below, then let RefreshCameraFeedSprite() pick the matching
+        // lit sprite for whoever is in the room (Barnacle, The Diver, both,
+        // or nobody). Handled directly here (rather than making each
+        // animatronic react to OnSonarPingStarted) since GameMaster already
+        // owns every camera sprite and already knows who is where.
+        if (!pingedIsVentCamera && pingedCameraIndex != -1)
         {
-            Image pingedImage = (cameraFeedImageComponents != null && pingedCameraIndex < cameraFeedImageComponents.Length) ? cameraFeedImageComponents[pingedCameraIndex] : null;
-            if (pingedImage != null)
-            {
-                pingedImage.sprite = barnacleOccupiedLitCameraSprites[pingedCameraIndex];
-            }
+            sonarLitCameraIndex = pingedCameraIndex;
+            RefreshCameraFeedSprite(pingedCameraIndex);
         }
 
         // Play the ping sound effect immediately, if one is assigned.
@@ -1198,15 +1354,16 @@ public class GameMaster : MonoBehaviour
             sonarFlashOverlay.gameObject.SetActive(false);
         }
 
-        // The flash is over - drop the pinged camera back to its correct
-        // NON-flash appearance before anything reacts to the roll below.
-        // If Barnacle is still the occupant at this exact instant (he
-        // hasn't heard the roll result yet), this correctly shows his
-        // plain "occupied" sprite; if he then retreats in response to the
-        // event just below, SetCaptainBarnacleCameraIndex() will
-        // immediately override it again to the empty sprite.
+        // The flash is over - clear the "lit" marker and drop the pinged
+        // camera back to its correct NON-flash appearance before anything
+        // reacts to the roll below. If Barnacle is still the occupant at
+        // this exact instant (he hasn't heard the roll result yet), this
+        // correctly shows his plain "occupied" sprite; if he then retreats
+        // in response to the event just below, SetCaptainBarnacleCameraIndex()
+        // will immediately override it again to the empty sprite.
         if (!pingedIsVentCamera && pingedCameraIndex != -1)
         {
+            sonarLitCameraIndex = -1;
             RefreshCameraFeedSprite(pingedCameraIndex);
         }
 
@@ -1468,17 +1625,49 @@ public class GameMaster : MonoBehaviour
     [Tooltip("How long (in real seconds) Barnacle's jumpscare sprite stays on screen before the real Game Over screen appears.")]
     [SerializeField] private float barnacleJumpscareDurationSeconds = 2.5f;
 
+    [Header("End States - The Diver Jumpscare")]
+
+    [Tooltip("The Diver's jumpscare sprite/GameObject, shown the instant he catches the player inside the office. Should start INACTIVE in the editor. Like Barnacle's, this should be a fixed overlay (not parented under the panning office sprite).")]
+    [SerializeField] private GameObject diverJumpscareObject;
+
+    [Tooltip("How long (in real seconds) The Diver's jumpscare sprite stays on screen before the real Game Over screen appears.")]
+    [SerializeField] private float diverJumpscareDurationSeconds = 2.5f;
+
     /// <summary>
     /// Called by CaptainBarnacle the instant his movement timer resolves a
     /// kill while he's waiting At Door. Rather than ending the night
     /// immediately (like Suffocation does via TriggerGameOver() above),
-    /// this freezes the game on a short jumpscare beat first: Playing ->
-    /// Jumpscare immediately freezes GameMaster.Update() and
-    /// CaptainBarnacle.Update() for free (both already early-return unless
-    /// CurrentState == Playing), then FinishJumpscareThenGameOver() below
-    /// hands off to the real TriggerGameOver() once the delay elapses.
+    /// this freezes the game on a short jumpscare beat first - see
+    /// BeginJumpscare() below for how.
     /// </summary>
     public void TriggerCaptainBarnacleJumpscare()
+    {
+        BeginJumpscare(barnacleJumpscareObject, barnacleJumpscareDurationSeconds, "Captain Barnacle");
+    }
+
+    /// <summary>
+    /// Called by TheDiver the instant the player fails to turn the lights
+    /// off in time while he is inside the office. Same jumpscare beat as
+    /// Barnacle's, just with The Diver's own sprite and duration.
+    /// </summary>
+    public void TriggerDiverJumpscare()
+    {
+        BeginJumpscare(diverJumpscareObject, diverJumpscareDurationSeconds, "The Diver");
+    }
+
+    /// <summary>
+    /// Shared jumpscare logic for every animatronic. Playing -> Jumpscare
+    /// immediately freezes GameMaster.Update() and every animatronic's
+    /// Update() for free (they all early-return unless CurrentState ==
+    /// Playing), then FinishJumpscareThenGameOver() below hands off to the
+    /// real TriggerGameOver() once the delay elapses.
+    ///
+    /// The guard at the top is also what guarantees only ONE jumpscare can
+    /// ever play: the first animatronic to call this flips the state to
+    /// Jumpscare, so any other animatronic calling it afterwards (even in
+    /// the very same frame) is simply ignored.
+    /// </summary>
+    private void BeginJumpscare(GameObject jumpscareObject, float durationSeconds, string animatronicName)
     {
         if (currentState != GameState.Playing)
         {
@@ -1490,23 +1679,23 @@ public class GameMaster : MonoBehaviour
         currentState = GameState.Jumpscare;
         HideAllPanelsAndButtons();
 
-        if (barnacleJumpscareObject != null)
+        if (jumpscareObject != null)
         {
-            barnacleJumpscareObject.SetActive(true);
+            jumpscareObject.SetActive(true);
         }
 
-        Debug.Log("[GameMaster] Captain Barnacle's jumpscare triggered - Game Over in " + barnacleJumpscareDurationSeconds.ToString("F1") + "s.");
-        StartCoroutine(FinishJumpscareThenGameOver());
+        Debug.Log("[GameMaster] " + animatronicName + "'s jumpscare triggered - Game Over in " + durationSeconds.ToString("F1") + "s.");
+        StartCoroutine(FinishJumpscareThenGameOver(jumpscareObject, durationSeconds));
     }
 
     /// <summary>Waits out the jumpscare's hold duration, hides the jumpscare sprite, then hands off to the real Game Over.</summary>
-    private IEnumerator FinishJumpscareThenGameOver()
+    private IEnumerator FinishJumpscareThenGameOver(GameObject jumpscareObject, float durationSeconds)
     {
-        yield return new WaitForSeconds(barnacleJumpscareDurationSeconds);
+        yield return new WaitForSeconds(durationSeconds);
 
-        if (barnacleJumpscareObject != null)
+        if (jumpscareObject != null)
         {
-            barnacleJumpscareObject.SetActive(false);
+            jumpscareObject.SetActive(false);
         }
 
         TriggerGameOver();
@@ -1538,6 +1727,16 @@ public class GameMaster : MonoBehaviour
             activePingCoroutine = null;
         }
         isPingLocked = false;
+
+        // If the cancelled ping had a camera marked as "lit", un-mark it
+        // and redraw it, so its lit sprite doesn't stay stuck on-screen.
+        if (sonarLitCameraIndex != -1)
+        {
+            int previouslyLitIndex = sonarLitCameraIndex;
+            sonarLitCameraIndex = -1;
+            RefreshCameraFeedSprite(previouslyLitIndex);
+        }
+
         if (sonarFlashOverlay != null)
         {
             sonarFlashOverlay.alpha = 0f;
@@ -1574,27 +1773,46 @@ public class GameMaster : MonoBehaviour
         // same pattern Start() below uses for officeLitSprite. This is what
         // lets SetCaptainBarnacleCameraIndex()/RefreshCameraFeedSprite() swap
         // an animatronic's sprite in and back out later without needing that
-        // "empty" art assigned anywhere a second time.
-        int cameraFeedCount = (cameraFeedViews != null) ? cameraFeedViews.Length : 0;
-        cameraFeedImageComponents = new Image[cameraFeedCount];
-        originalCameraFeedSprites = new Sprite[cameraFeedCount];
-        for (int i = 0; i < cameraFeedCount; i++)
+        // "empty" art assigned anywhere a second time. The vent layer gets
+        // the exact same treatment, for The Diver's CAM 08 sprite.
+        CacheFeedImages(cameraFeedViews, out cameraFeedImageComponents, out originalCameraFeedSprites);
+        CacheFeedImages(ventFeedViews, out ventFeedImageComponents, out originalVentFeedSprites);
+
+        // Nobody occupies any camera until an animatronic script says
+        // otherwise via SetCaptainBarnacleCameraIndex()/SetDiverCameraIndex()/
+        // SetDiverVentCameraIndex(), and no camera is mid Sonar flash yet.
+        barnacleCameraIndex = -1;
+        diverCameraIndex = -1;
+        diverVentCameraIndex = -1;
+        sonarLitCameraIndex = -1;
+    }
+
+    /// <summary>
+    /// For every GameObject in views, grabs the Image component sitting on
+    /// it and remembers whatever sprite that Image is showing right now (the
+    /// empty-room art). Both output arrays line up index-for-index with
+    /// views. A missing view or missing Image simply leaves a null entry,
+    /// which every Refresh...Sprite() method already checks for.
+    /// </summary>
+    private void CacheFeedImages(GameObject[] views, out Image[] images, out Sprite[] originalSprites)
+    {
+        int count = (views != null) ? views.Length : 0;
+        images = new Image[count];
+        originalSprites = new Sprite[count];
+
+        for (int i = 0; i < count; i++)
         {
-            if (cameraFeedViews[i] == null)
+            if (views[i] == null)
             {
                 continue;
             }
 
-            cameraFeedImageComponents[i] = cameraFeedViews[i].GetComponent<Image>();
-            if (cameraFeedImageComponents[i] != null)
+            images[i] = views[i].GetComponent<Image>();
+            if (images[i] != null)
             {
-                originalCameraFeedSprites[i] = cameraFeedImageComponents[i].sprite;
+                originalSprites[i] = images[i].sprite;
             }
         }
-
-        // Nobody occupies any camera until an animatronic script says
-        // otherwise via SetCaptainBarnacleCameraIndex().
-        barnacleCameraIndex = -1;
     }
 
     /// <summary>Called once when the scene starts. Resets every system to its "beginning of the night" state.</summary>
