@@ -67,7 +67,7 @@ which is the intended knob for ramping difficulty across nights later.
 | Cam5 | Forward/backward roll. Forward → Cam4. Backward → Cam6. |
 | Cam6 | Forward/backward roll. Forward → Cam5. Backward → Cam7. |
 | Cam7 | Forward/backward roll. Forward → Cam2. Backward → Cam6. |
-| **Cam2** (branch) | Forward/backward roll. **Forward succeeds** → 50/50 split between Cam1 and Cam3. **Forward fails** → always Cam7. |
+| **Cam2** (branch) | **No forward/backward roll.** Weighted pick among Cam1 / Cam3 / Cam7 (default weights 40 / 35 / 25, Inspector-tunable). |
 | **Cam4** (branch) | **No forward/backward roll at all.** Flat 1-in-3 pick among {Cam3, Cam5, **Door**}. Cam1 is deliberately excluded from this pick — the Window path only ever runs one way. |
 | **Window** | No forward/backward roll — *any* successful opportunity advances him straight to Cam4. |
 | **Door** | *Any* successful opportunity triggers his jumpscare, which leads to Game Over a short beat later (see "The Door Jumpscare" below) — this is literally how he kills the player. |
@@ -76,6 +76,7 @@ The five "plain" rooms (Cam1, Cam3, Cam5, Cam6, Cam7) all share one
 `moveForwardChance` roll (also `[0,1]`, inspector-tunable): a second
 `Random.value` compared against that chance decides forward vs. backward,
 then the room's single forward or backward neighbor is looked up directly.
+Neither branch room (Cam2, Cam4) uses `moveForwardChance`.
 
 ### Why Cam2 and Cam4 are different
 
@@ -88,11 +89,20 @@ Both are hub rooms with three neighbors instead of two, so "forward" or
   just as likely per successful opportunity as retreating to Cam3 or Cam5.
   This is deliberately tense: sitting at Cam4 is genuinely dangerous every
   single movement check, not just occasionally.
-- **Cam2** keeps the standard forward/backward roll, but "forward" has two
-  possible destinations (Cam1 or Cam3, since both lead toward the office by
-  different paths), so a coin flip decides between them once forward is
-  chosen. Backward at Cam2 always means retreating into the long path via
-  Cam7 — there's only one way back from this hub.
+- **Cam2** makes a single **weighted pick** among its three exits, using
+  `cam2ToCam1Weight` / `cam2ToCam3Weight` / `cam2ToCam7Weight` (default
+  40 / 35 / 25). These are relative weights, so each room's chance is its
+  weight divided by the total, and they don't need to add up to 100. If all
+  three are 0, a warning is logged and he falls back to an even 1-in-3
+  pick.
+
+  *Why it changed (balancing):* Cam2 originally used the standard
+  forward/backward roll, then a 50/50 coin flip between Cam1 and Cam3 if the
+  roll was forward. With `moveForwardChance` at 0.5, that gave **Cam7 50% /
+  Cam1 25% / Cam3 25%**. He fell back into the long path twice as often as
+  he headed for the Window route, which made him feel passive. The weighted
+  pick makes Cam7 the least likely exit by default, while backtracking stays
+  possible.
 
 ### Why the Window and the Door are "wait states," not instant transitions
 

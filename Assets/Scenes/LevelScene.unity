@@ -5209,6 +5209,9 @@ MonoBehaviour:
   aiLevel: 0.5
   movementCheckIntervalSeconds: 5
   moveForwardChance: 0.5
+  cam2ToCam1Weight: 40
+  cam2ToCam3Weight: 35
+  cam2ToCam7Weight: 25
   spawnMinCameraNumber: 3
   spawnMaxCameraNumber: 7
   pushbackHoldMinSeconds: 1
@@ -5728,7 +5731,7 @@ MonoBehaviour:
   hypoxiaOverlay: {fileID: 135949927}
   maxOxygen: 100
   oxygenDecayPerSecond: 0.111
-  releasePressureDrainPerSecond: 8
+  releasePressureDrainPerSecond: 4
   hypoxiaThresholdPercent: 50
   officeViewRoot: {fileID: 1660598820}
   officeSpriteRenderer: {fileID: 1660598821}
