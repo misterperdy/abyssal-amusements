@@ -927,6 +927,11 @@ public class GameMaster : MonoBehaviour
         SetActiveIfAssigned(ventCameraSelectorRoot, isViewingVents);
         SetActiveIfAssigned(ventCameraFeedRoot, isViewingVents);
 
+        // Sonar Ping has no use on the Vent Network, so hide its button (or
+        // the "SONAR REBOOTING" text) there, and bring back whichever one
+        // matches the Sonar's current state when switching back.
+        RefreshSonarControlsVisibility();
+
         // The very first time we switch INTO the vent layer this session,
         // there is no previously-selected vent camera yet - show the
         // configured default, exactly like OpenCameraMonitor() does for the
@@ -1219,7 +1224,9 @@ public class GameMaster : MonoBehaviour
     public static event System.Action<int, bool, bool> OnSonarPing;
     // Event parameters, in order:
     //   int  cameraIndex           - GetActiveCameraIndex() at the moment the ping fired.
-    //   bool isVentCamera          - true if that camera was on the Vent Network layer.
+    //   bool isVentCamera          - true if that camera was on the Vent Network layer. Always
+    //                                false in practice now, since pings can't be fired from the
+    //                                vents - kept so listeners don't need to change.
     //   bool pushbackRollSucceeded - the result of this ping's pushbackSuccessChance roll.
 
     /// <summary>
@@ -1240,11 +1247,14 @@ public class GameMaster : MonoBehaviour
     /// <summary>
     /// Fires a Sonar Ping on whichever camera is currently on-screen. Hook
     /// this up to sonarPingButton's OnClick. Does nothing if the monitor
-    /// isn't open, a ping is already playing, or the Sonar is overheated.
+    /// isn't open, a ping is already playing, the Sonar is overheated, or
+    /// the player is viewing the Vent Network (the button is hidden there
+    /// anyway - see RefreshSonarControlsVisibility() - this just keeps the
+    /// rule safe even if something calls this method directly).
     /// </summary>
     public void FireSonarPing()
     {
-        if (!isCameraPanelOpen || isPingLocked || isSonarOverheated)
+        if (!isCameraPanelOpen || isPingLocked || isSonarOverheated || isViewingVents)
         {
             return;
         }
@@ -1473,7 +1483,8 @@ public class GameMaster : MonoBehaviour
 
     // True while the Sonar is offline recovering from an overheat. The
     // Sonar Ping button is hidden and sonarRebootingText is shown for the
-    // whole time this is true.
+    // whole time this is true (while on the regular camera layer - on the
+    // Vent Network both are hidden, see RefreshSonarControlsVisibility()).
     private bool isSonarOverheated;
 
     // Counts down from sonarRebootSeconds while isSonarOverheated is true.
@@ -1523,11 +1534,7 @@ public class GameMaster : MonoBehaviour
         isSonarOverheated = true;
         overheatRebootTimer = sonarRebootSeconds;
 
-        SetButtonVisible(sonarPingButton != null ? sonarPingButton.gameObject : null, false);
-        if (sonarRebootingText != null)
-        {
-            sonarRebootingText.gameObject.SetActive(true);
-        }
+        RefreshSonarControlsVisibility();
     }
 
     /// <summary>
@@ -1552,12 +1559,24 @@ public class GameMaster : MonoBehaviour
             isSonarOverheated = false;
             RollNewOverheatCapacity();
 
-            if (sonarRebootingText != null)
-            {
-                sonarRebootingText.gameObject.SetActive(false);
-            }
-            SetButtonVisible(sonarPingButton != null ? sonarPingButton.gameObject : null, true);
+            RefreshSonarControlsVisibility();
         }
+    }
+
+    /// <summary>
+    /// Single source of truth for which Sonar control is on screen: the
+    /// Sonar Ping button while the Sonar is online, or the "SONAR
+    /// REBOOTING" text while it's overheated - but NEITHER while the player
+    /// is viewing the Vent Network, since nothing in the vents reacts to a
+    /// ping. Called whenever either input changes: an overheat starting or
+    /// finishing, and the Map being toggled between layers.
+    /// </summary>
+    private void RefreshSonarControlsVisibility()
+    {
+        bool onRegularLayer = !isViewingVents;
+
+        SetButtonVisible(sonarPingButton != null ? sonarPingButton.gameObject : null, onRegularLayer && !isSonarOverheated);
+        SetActiveIfAssigned(sonarRebootingText != null ? sonarRebootingText.gameObject : null, onRegularLayer && isSonarOverheated);
     }
 
     /// <summary>
@@ -1874,8 +1893,7 @@ public class GameMaster : MonoBehaviour
         // fresh random overheat capacity for the night.
         isSonarOverheated = false;
         RollNewOverheatCapacity();
-        SetButtonVisible(sonarPingButton != null ? sonarPingButton.gameObject : null, true);
-        if (sonarRebootingText != null) sonarRebootingText.gameObject.SetActive(false);
+        RefreshSonarControlsVisibility();
         if (sonarHeatMeter != null) sonarHeatMeter.gameObject.SetActive(false);
 
         // The night is now live.

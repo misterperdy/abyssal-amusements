@@ -184,8 +184,9 @@ camera's look. It works as a decision table:
 | Nobody | the room's original sprite | the room's original sprite |
 
 CAM 08 (vent): `diverOccupiedVentCameraSprite` while he's there, otherwise the
-vent camera's original sprite. There is no vent "lit" variant; the green flash
-overlay still plays on top.
+vent camera's original sprite. There is no vent "lit" variant: Sonar Ping
+can't be fired from the Vent Network at all. Its button, and the "SONAR
+REBOOTING" text, are hidden while the vent layer is showing.
 
 Any sprite not yet assigned in the Inspector **falls back to the room's
 original empty sprite**, rather than Unity's white box.
