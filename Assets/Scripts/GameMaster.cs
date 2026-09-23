@@ -794,6 +794,17 @@ public class GameMaster : MonoBehaviour
         {
             cameraPanel.SetActive(false);
         }
+
+        // The monitor always reopens on the regular cameras, never the
+        // vents - so if it's being closed on the Vent Network, switch back
+        // to the Facility Floorplan now. currentCameraIndex was never
+        // touched while on the vents, so the next open shows whichever
+        // regular camera was last selected (and currentVentCameraIndex is
+        // likewise kept for the next time the Map is toggled to the vents).
+        if (isViewingVents)
+        {
+            SetMapLayer(false);
+        }
     }
 
     /// <summary>
@@ -918,7 +929,20 @@ public class GameMaster : MonoBehaviour
             return;
         }
 
-        isViewingVents = !isViewingVents;
+        SetMapLayer(!isViewingVents);
+    }
+
+    /// <summary>
+    /// Shows one Camera Monitor layer and hides the other: the Vent Network
+    /// if showVents is true, otherwise the Facility Floorplan. The single
+    /// place that changes isViewingVents - used by the Map button
+    /// (ToggleMapView() above), by CloseCameraMonitor() to always send the
+    /// monitor back to the regular cameras, and by Start() to set up the
+    /// night's starting layer.
+    /// </summary>
+    private void SetMapLayer(bool showVents)
+    {
+        isViewingVents = showVents;
 
         // Show whichever pair of roots (selector + feed) matches the layer
         // we just switched to, and hide the other pair.
@@ -1876,13 +1900,9 @@ public class GameMaster : MonoBehaviour
 
         // Every night starts on the Facility Floorplan layer, with neither
         // layer having a remembered camera selection yet.
-        isViewingVents = false;
         currentCameraIndex = -1;
         currentVentCameraIndex = -1;
-        SetActiveIfAssigned(regularCameraSelectorRoot, true);
-        SetActiveIfAssigned(regularCameraFeedRoot, true);
-        SetActiveIfAssigned(ventCameraSelectorRoot, false);
-        SetActiveIfAssigned(ventCameraFeedRoot, false);
+        SetMapLayer(false);
 
         // The camera-feed sprite cache and Captain Barnacle's occupancy
         // tracking are initialized in Awake() above, not here - see that
