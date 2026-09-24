@@ -62,36 +62,39 @@ which is the intended knob for ramping difficulty across nights later.
 
 | Current location | Rule |
 |---|---|
-| Cam1 | Forward/backward roll. Forward → **Window**. Backward → Cam2. |
-| Cam3 | Forward/backward roll. Forward → Cam4. Backward → Cam2. |
-| Cam5 | Forward/backward roll. Forward → Cam4. Backward → Cam6. |
-| Cam6 | Forward/backward roll. Forward → Cam5. Backward → Cam7. |
-| Cam7 | Forward/backward roll. Forward → Cam2. Backward → Cam6. |
-| **Cam2** (branch) | **No forward/backward roll.** Weighted pick among Cam1 / Cam3 / Cam7 (default weights 40 / 35 / 25, Inspector-tunable). |
-| **Cam4** (branch) | **No forward/backward roll at all.** Flat 1-in-3 pick among {Cam3, Cam5, **Door**}. Cam1 is deliberately excluded from this pick — the Window path only ever runs one way. |
+| Cam1 | Forward/backward roll (`cam1ForwardChance`, default 0.8). Forward → **Window**. Backward → Cam2. |
+| Cam3 | Forward/backward roll (`cam3ForwardChance`, default 0.15). Forward → Cam4. Backward → Cam2. |
+| Cam5 | Forward/backward roll (`cam5ForwardChance`, default 0.15). Forward → Cam4. Backward → Cam6. |
+| Cam6 | Forward/backward roll (`cam6ForwardChance`, default 0.5). Forward → Cam5. Backward → Cam7. |
+| Cam7 | Forward/backward roll (`cam7ForwardChance`, default 0.5). Forward → Cam2. Backward → Cam6. |
+| **Cam2** (branch) | **No forward/backward roll.** Weighted pick among Cam1 / Cam3 / Cam7 (default weights 60 / 15 / 25, Inspector-tunable). |
+| **Cam4** (branch) | **No forward/backward roll at all.** Weighted pick among {Cam3, Cam5, **Door**} (default weights 2 / 1 / 1.5, Inspector-tunable; 1 / 1 / 1 is the game bible's original flat 1-in-3). Cam1 is deliberately excluded from this pick — the Window path only ever runs one way. |
 | **Window** | No forward/backward roll — *any* successful opportunity advances him straight to Cam4. |
 | **Door** | *Any* successful opportunity triggers his jumpscare, which leads to Game Over a short beat later (see "The Door Jumpscare" below) — this is literally how he kills the player. |
 
-The five "plain" rooms (Cam1, Cam3, Cam5, Cam6, Cam7) all share one
-`moveForwardChance` roll (also `[0,1]`, inspector-tunable): a second
-`Random.value` compared against that chance decides forward vs. backward,
-then the room's single forward or backward neighbor is looked up directly.
-Neither branch room (Cam2, Cam4) uses `moveForwardChance`.
+Each of the five "plain" rooms (Cam1, Cam3, Cam5, Cam6, Cam7) has its own
+forward chance (`[0,1]`, inspector-tunable): a second `Random.value`
+compared against that room's chance decides forward vs. backward, then the
+room's single forward or backward neighbor is looked up directly. Neither
+branch room (Cam2, Cam4) uses a forward chance. (Originally all five rooms
+shared a single `moveForwardChance` - see "Balancing pass 2" below.)
 
 ### Why Cam2 and Cam4 are different
 
 Both are hub rooms with three neighbors instead of two, so "forward" or
 "backward" alone can't fully describe the choice:
 
-- **Cam4** is explicitly spelled out in the game bible as a flat three-way
-  choice *including the door itself as one of the three outcomes* — there is
-  no separate "did he decide to advance" roll at Cam4; reaching the door is
-  just as likely per successful opportunity as retreating to Cam3 or Cam5.
-  This is deliberately tense: sitting at Cam4 is genuinely dangerous every
-  single movement check, not just occasionally.
+- **Cam4** is spelled out in the game bible as a three-way choice
+  *including the door itself as one of the three outcomes* — there is no
+  separate "did he decide to advance" roll at Cam4. The bible's version is
+  a flat 1-in-3; it is now a weighted pick (`cam4ToCam3Weight` /
+  `cam4ToCam5Weight` / `cam4ToDoorWeight`, default 2 / 1 / 1.5, so the Door
+  is ~33% per opportunity - the same as before). This is deliberately
+  tense: sitting at Cam4 is genuinely dangerous every single movement
+  check, not just occasionally.
 - **Cam2** makes a single **weighted pick** among its three exits, using
   `cam2ToCam1Weight` / `cam2ToCam3Weight` / `cam2ToCam7Weight` (default
-  40 / 35 / 25). These are relative weights, so each room's chance is its
+  60 / 15 / 25). These are relative weights, so each room's chance is its
   weight divided by the total, and they don't need to add up to 100. If all
   three are 0, a warning is logged and he falls back to an even 1-in-3
   pick.
@@ -103,6 +106,42 @@ Both are hub rooms with three neighbors instead of two, so "forward" or
   he headed for the Window route, which made him feel passive. The weighted
   pick makes Cam7 the least likely exit by default, while backtracking stays
   possible.
+
+### Balancing pass 2: favouring the Window route
+
+The intended main attack is **Cam2 → Cam1 → Window → Cam4**, but in
+playtesting he mostly came through Cam2 → Cam3 → Cam4. A 30,000-night
+simulation of the movement rules (no player counterplay) showed why. With
+the old values (one shared `moveForwardChance` of 0.5, Cam2 40/35/25, Cam4
+flat 1-in-3):
+
+- From Cam2 the routes were close to a coin flip: Window 45% / short
+  (2-3-4) 41% / long (2-7-6-5-4) 14%. Per move, heading for Cam1 was
+  0.40 × 0.5 = 0.20 and heading for Cam3→Cam4 was 0.35 × 0.5 = 0.175, and
+  the Window route is one step longer.
+- **Cam4 was a revolving door.** Two thirds of Cam4 moves step back to Cam3
+  or Cam5, and both walked straight back into Cam4 half the time. So most
+  kills came from bouncing, not from a fresh approach: of the Cam4 visits
+  that ended at the Door, only **18%** had come through the Window
+  (Cam3 36%, Cam5 40%, spawned at Cam4 6%).
+
+The fix was a forward chance per room plus Cam4 weights. Cam1 pulls him
+forward hard, while Cam3 and Cam5 are "leaky": he usually backs out of
+them, and Cam2 now favours Cam1.
+
+| Values | Kills via Window | via Cam3 | via Cam5 | Avg. time to kill |
+|---|---|---|---|---|
+| Old | 18% | 36% | 40% | ~163s |
+| New defaults | **66%** | 11% | 17% | ~253s |
+
+From Cam2 alone, the Window route is now taken 82% of the time. The
+trade-off is pace: he is slower to kill because the Window route is longer.
+Raising `aiLevel` to about 0.65 brings it back to roughly 195s, since time
+to kill scales with 1 / `aiLevel`.
+
+The Sonar pushback chain (1→2→3→4) was left untouched because it's a
+game-bible rule. Note that it still pushes him along the short route when
+the player pings him at Cam2 or Cam3.
 
 ### Why the Window and the Door are "wait states," not instant transitions
 

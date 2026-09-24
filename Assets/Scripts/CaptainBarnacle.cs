@@ -14,13 +14,16 @@ using UnityEngine;
 /// full reasoning) - in short:
 ///   - Every few seconds he rolls a chance ("AI Level") to get a
 ///     "movement opportunity" at all.
-///   - If he gets one, most rooms roll a second chance ("Move Forward
-///     Chance") to decide whether he advances toward the office or
-///     retreats away from it.
+///   - If he gets one, most rooms roll a second chance (that room's
+///     "Forward Chance") to decide whether he advances toward the office
+///     or retreats away from it.
 ///   - Two rooms (Cam2 and Cam4) are "branch" rooms where more than one
-///     path is available, so they pick a destination directly instead -
-///     Cam2 with Inspector-tunable weights, Cam4 with a flat 1-in-3 pick.
-///     See ResolveCam2Branch() and ResolveCam4Branch() below.
+///     path is available, so they pick a destination directly instead,
+///     each with its own Inspector-tunable weights. See
+///     ResolveCam2Branch() and ResolveCam4Branch() below.
+///   - The defaults are balanced so that most of his attacks come through
+///     the Window route (Cam2 - Cam1 - Window - Cam4), not the short
+///     Cam2 - Cam3 - Cam4 route.
 ///   - Reaching the Window or the Door is not instant death/danger - he
 ///     WAITS there, and his next successful movement opportunity is what
 ///     actually advances him from the Window to Cam4, or kills the player
@@ -81,29 +84,73 @@ public class CaptainBarnacle : MonoBehaviour
     [Tooltip("How often (in real seconds) Barnacle rolls his AI Level to see if he gets a movement opportunity. Game bible: every 5 seconds.")]
     [SerializeField] private float movementCheckIntervalSeconds = 5f;
 
-    [Tooltip("On a successful movement opportunity in Cam1, Cam3, Cam5, Cam6, or Cam7, the chance he moves FORWARD (toward the office) rather than backward (away from it). Cam2 and Cam4 are branch rooms and do NOT use this roll - see the Cam2 Branch Weights below and CaptainBarnacle_Design.md.")]
+    [Header("Forward Chances (per room)")]
+    // On a successful movement opportunity in one of these five rooms, he
+    // rolls that room's chance to move FORWARD (toward the office) rather
+    // than backward (away from it). Each room has its own chance so the
+    // routes can be balanced separately: by default the Window route
+    // (Cam1) pulls him forward hard, while Cam3 and Cam5 are "leaky" - he
+    // usually backs out of them - so most of his attacks come through the
+    // Window. Cam2 and Cam4 are branch rooms and use their weights below.
+
+    [Tooltip("Cam1: chance to move FORWARD to the Window. Backward goes to Cam2.")]
     [Range(0f, 1f)]
-    [SerializeField] private float moveForwardChance = 0.5f;
+    [SerializeField] private float cam1ForwardChance = 0.8f;
+
+    [Tooltip("Cam3: chance to move FORWARD to Cam4 (the door room). Backward goes to Cam2. Keep this low so the short Cam2-Cam3-Cam4 route stays rare.")]
+    [Range(0f, 1f)]
+    [SerializeField] private float cam3ForwardChance = 0.15f;
+
+    [Tooltip("Cam5: chance to move FORWARD to Cam4 (the door room). Backward goes to Cam6. Keep this low so he doesn't just bounce Cam4-Cam5-Cam4.")]
+    [Range(0f, 1f)]
+    [SerializeField] private float cam5ForwardChance = 0.15f;
+
+    [Tooltip("Cam6: chance to move FORWARD to Cam5. Backward goes to Cam7.")]
+    [Range(0f, 1f)]
+    [SerializeField] private float cam6ForwardChance = 0.5f;
+
+    [Tooltip("Cam7: chance to move FORWARD to Cam2. Backward goes to Cam6.")]
+    [Range(0f, 1f)]
+    [SerializeField] private float cam7ForwardChance = 0.5f;
 
     [Header("Cam2 Branch Weights")]
     // Cam2 is a hub with three exits, so a successful movement opportunity
     // there picks one of them directly using these weights. They are
     // RELATIVE weights, not percentages - they don't need to add up to 100.
     // Each room's chance is its weight divided by the total of all three,
-    // e.g. 40 / 35 / 25 -> Cam1 40%, Cam3 35%, Cam7 25%, and 2 / 1 / 1 ->
+    // e.g. 60 / 15 / 25 -> Cam1 60%, Cam3 15%, Cam7 25%, and 2 / 1 / 1 ->
     // Cam1 50%, Cam3 25%, Cam7 25%.
 
     [Tooltip("Relative weight for moving from Cam2 to Cam1 (toward the Window route). Chance = this weight / the total of all three Cam2 weights.")]
     [Min(0f)]
-    [SerializeField] private float cam2ToCam1Weight = 40f;
+    [SerializeField] private float cam2ToCam1Weight = 60f;
 
     [Tooltip("Relative weight for moving from Cam2 to Cam3 (the short route toward the Door). Chance = this weight / the total of all three Cam2 weights.")]
     [Min(0f)]
-    [SerializeField] private float cam2ToCam3Weight = 35f;
+    [SerializeField] private float cam2ToCam3Weight = 15f;
 
     [Tooltip("Relative weight for moving from Cam2 back to Cam7 (retreating into the long route). Chance = this weight / the total of all three Cam2 weights.")]
     [Min(0f)]
     [SerializeField] private float cam2ToCam7Weight = 25f;
+
+    [Header("Cam4 Branch Weights")]
+    // Cam4 is the door room. A successful movement opportunity here picks
+    // one of these three using the same relative-weight rule as Cam2.
+    // Setting all three to 1 gives the game bible's original flat 1-in-3.
+    // By default he retreats to Cam3 more than Cam5, because Cam3 usually
+    // sends him back to Cam2 - and from there, toward the Window route.
+
+    [Tooltip("Relative weight for retreating from Cam4 to Cam3. Chance = this weight / the total of all three Cam4 weights.")]
+    [Min(0f)]
+    [SerializeField] private float cam4ToCam3Weight = 2f;
+
+    [Tooltip("Relative weight for retreating from Cam4 to Cam5. Chance = this weight / the total of all three Cam4 weights.")]
+    [Min(0f)]
+    [SerializeField] private float cam4ToCam5Weight = 1f;
+
+    [Tooltip("Relative weight for moving from Cam4 to the Door (the lethal waiting spot). Chance = this weight / the total of all three Cam4 weights.")]
+    [Min(0f)]
+    [SerializeField] private float cam4ToDoorWeight = 1.5f;
 
 
     // -------------------------------------------------------------------
@@ -341,17 +388,18 @@ public class CaptainBarnacle : MonoBehaviour
 
     /// <summary>
     /// Handles every room that has exactly one forward neighbor and one
-    /// backward neighbor (Cam1, Cam3, Cam5, Cam6, Cam7). Rolls
-    /// moveForwardChance and moves to whichever neighbor that roll selects.
+    /// backward neighbor (Cam1, Cam3, Cam5, Cam6, Cam7). Rolls that room's
+    /// own forward chance and moves to whichever neighbor that roll selects.
     /// </summary>
     private void ResolveStandardForwardBackward()
     {
-        bool movingForward = Random.value <= moveForwardChance;
+        float forwardChance = GetForwardChance(currentLocation);
+        bool movingForward = Random.value <= forwardChance;
         BarnacleLocation destination = movingForward
             ? GetForwardNeighbor(currentLocation)
             : GetBackwardNeighbor(currentLocation);
 
-        Debug.Log("[Barnacle] Forward/backward roll at " + currentLocation + " -> " + (movingForward ? "FORWARD" : "backward") + " to " + destination + ".");
+        Debug.Log("[Barnacle] Forward/backward roll at " + currentLocation + " (forward chance " + forwardChance.ToString("F2") + ") -> " + (movingForward ? "FORWARD" : "backward") + " to " + destination + ".");
         MoveTo(destination);
     }
 
@@ -359,80 +407,95 @@ public class CaptainBarnacle : MonoBehaviour
     /// Cam2 is a branch room with three neighbors (Cam1, Cam3, Cam7). A
     /// successful movement opportunity here makes ONE weighted pick between
     /// them using cam2ToCam1Weight / cam2ToCam3Weight / cam2ToCam7Weight
-    /// (default 40 / 35 / 25) - there is no forward/backward roll.
-    ///
-    /// How the weighted pick works: imagine the three weights laid end to
-    /// end on a ruler of length "total". We pick a random point on that
-    /// ruler, and whichever room's stretch it lands in is where he goes -
-    /// so a bigger weight means a bigger stretch, and a higher chance.
+    /// (default 60 / 15 / 25) - there is no forward/backward roll.
     /// </summary>
     private void ResolveCam2Branch()
     {
-        float total = cam2ToCam1Weight + cam2ToCam3Weight + cam2ToCam7Weight;
+        int pick = PickWeighted(cam2ToCam1Weight, cam2ToCam3Weight, cam2ToCam7Weight, "Cam2", out float chosenPercent);
+        BarnacleLocation destination = (pick == 0) ? BarnacleLocation.Cam1 : (pick == 1) ? BarnacleLocation.Cam3 : BarnacleLocation.Cam7;
 
-        // All three weights set to 0 would leave nothing to pick from -
-        // warn and fall back to an even 1-in-3 pick instead of breaking.
-        if (total <= 0f)
-        {
-            Debug.LogWarning("[Barnacle] All three Cam2 branch weights are 0 - falling back to an even 1-in-3 pick. Set at least one weight above 0 in the Inspector.");
-            int pick = Random.Range(0, 3); // 0, 1, or 2 - each equally likely.
-            BarnacleLocation evenDestination = (pick == 0) ? BarnacleLocation.Cam1 : (pick == 1) ? BarnacleLocation.Cam3 : BarnacleLocation.Cam7;
-            MoveTo(evenDestination);
-            return;
-        }
-
-        float roll = Random.value * total;
-
-        BarnacleLocation destination;
-        float chosenWeight;
-        if (roll < cam2ToCam1Weight)
-        {
-            destination = BarnacleLocation.Cam1;
-            chosenWeight = cam2ToCam1Weight;
-        }
-        else if (roll < cam2ToCam1Weight + cam2ToCam3Weight)
-        {
-            destination = BarnacleLocation.Cam3;
-            chosenWeight = cam2ToCam3Weight;
-        }
-        else
-        {
-            destination = BarnacleLocation.Cam7;
-            chosenWeight = cam2ToCam7Weight;
-        }
-
-        float chosenPercent = chosenWeight / total * 100f;
         Debug.Log("[Barnacle] Cam2 branch roll (weighted) -> " + destination + " (" + chosenPercent.ToString("F0") + "% chance).");
         MoveTo(destination);
     }
 
     /// <summary>
-    /// Cam4 is the other branch room, and the game bible spells its rule
-    /// out explicitly: no forward/backward roll at all here - any
-    /// successful movement opportunity is a flat 1-in-3 pick between Cam3,
-    /// Cam5, and the Door. Cam1 is deliberately excluded - the Window edge
-    /// only ever runs Cam1 -> Cam4, never the reverse.
+    /// Cam4 is the other branch room: the door room. A successful movement
+    /// opportunity here makes ONE weighted pick between Cam3, Cam5 and the
+    /// Door using cam4ToCam3Weight / cam4ToCam5Weight / cam4ToDoorWeight
+    /// (default 2 / 1 / 1.5 - set all three to 1 for the game bible's
+    /// original flat 1-in-3). Cam1 is deliberately excluded - the Window
+    /// edge only ever runs Cam1 -> Cam4, never the reverse.
     /// </summary>
     private void ResolveCam4Branch()
     {
-        int pick = Random.Range(0, 3); // 0, 1, or 2 - each equally likely.
-        BarnacleLocation destination;
+        int pick = PickWeighted(cam4ToCam3Weight, cam4ToCam5Weight, cam4ToDoorWeight, "Cam4", out float chosenPercent);
+        BarnacleLocation destination = (pick == 0) ? BarnacleLocation.Cam3 : (pick == 1) ? BarnacleLocation.Cam5 : BarnacleLocation.AtDoor;
 
-        switch (pick)
+        Debug.Log("[Barnacle] Cam4 branch roll (weighted) -> " + destination + " (" + chosenPercent.ToString("F0") + "% chance).");
+        MoveTo(destination);
+    }
+
+    /// <summary>
+    /// Shared weighted pick used by both branch rooms. Returns 0, 1 or 2 -
+    /// which of the three weights was picked - and outputs that option's
+    /// chance as a percentage (for the Console log).
+    ///
+    /// How it works: imagine the three weights laid end to end on a ruler
+    /// of length "total". We pick a random point on that ruler, and
+    /// whichever option's stretch it lands in is the one picked - so a
+    /// bigger weight means a bigger stretch, and a higher chance.
+    /// </summary>
+    private int PickWeighted(float weightA, float weightB, float weightC, string roomName, out float chosenPercent)
+    {
+        float total = weightA + weightB + weightC;
+
+        // All three weights set to 0 would leave nothing to pick from -
+        // warn and fall back to an even 1-in-3 pick instead of breaking.
+        if (total <= 0f)
         {
-            case 0:
-                destination = BarnacleLocation.Cam3;
-                break;
-            case 1:
-                destination = BarnacleLocation.Cam5;
-                break;
-            default:
-                destination = BarnacleLocation.AtDoor;
-                break;
+            Debug.LogWarning("[Barnacle] All three " + roomName + " branch weights are 0 - falling back to an even 1-in-3 pick. Set at least one weight above 0 in the Inspector.");
+            chosenPercent = 100f / 3f;
+            return Random.Range(0, 3); // 0, 1, or 2 - each equally likely.
         }
 
-        Debug.Log("[Barnacle] Cam4 branch roll (1-in-3) -> " + destination + ".");
-        MoveTo(destination);
+        float roll = Random.value * total;
+
+        int pick;
+        float chosenWeight;
+        if (roll < weightA)
+        {
+            pick = 0;
+            chosenWeight = weightA;
+        }
+        else if (roll < weightA + weightB)
+        {
+            pick = 1;
+            chosenWeight = weightB;
+        }
+        else
+        {
+            pick = 2;
+            chosenWeight = weightC;
+        }
+
+        chosenPercent = chosenWeight / total * 100f;
+        return pick;
+    }
+
+    /// <summary>The forward chance for every non-branch room (Cam1, Cam3, Cam5, Cam6, Cam7), read from the Forward Chances Inspector fields. Do not call this for Cam2/Cam4.</summary>
+    private float GetForwardChance(BarnacleLocation location)
+    {
+        switch (location)
+        {
+            case BarnacleLocation.Cam1: return cam1ForwardChance;
+            case BarnacleLocation.Cam3: return cam3ForwardChance;
+            case BarnacleLocation.Cam5: return cam5ForwardChance;
+            case BarnacleLocation.Cam6: return cam6ForwardChance;
+            case BarnacleLocation.Cam7: return cam7ForwardChance;
+            default:
+                Debug.LogWarning("[Barnacle] GetForwardChance called with an unsupported location: " + location);
+                return 0.5f;
+        }
     }
 
     /// <summary>The single forward neighbor for every non-branch room (Cam1, Cam3, Cam5, Cam6, Cam7). Do not call this for Cam2/Cam4 - they have their own resolver methods above.</summary>

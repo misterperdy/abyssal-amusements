@@ -5600,10 +5600,17 @@ MonoBehaviour:
   gameMaster: {fileID: 1471672201}
   aiLevel: 0.5
   movementCheckIntervalSeconds: 5
-  moveForwardChance: 0.5
-  cam2ToCam1Weight: 40
-  cam2ToCam3Weight: 35
-  cam2ToCam7Weight: 25
+  cam1ForwardChance: 0.8
+  cam3ForwardChance: 0.15
+  cam5ForwardChance: 0.15
+  cam6ForwardChance: 0.5
+  cam7ForwardChance: 0.5
+  cam2ToCam1Weight: 60
+  cam2ToCam3Weight: 20
+  cam2ToCam7Weight: 20
+  cam4ToCam3Weight: 2
+  cam4ToCam5Weight: 1
+  cam4ToDoorWeight: 1.5
   spawnMinCameraNumber: 3
   spawnMaxCameraNumber: 7
   pushbackHoldMinSeconds: 1
