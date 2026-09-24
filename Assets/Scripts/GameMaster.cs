@@ -10,11 +10,13 @@ using TMPro;            // Gives us TMP_Text, used for all on-screen text in thi
 /// system a FNAF3-style night needs (before animatronics are added) lives here
 /// so there is exactly one place to look when tracing how the game behaves.
 ///
-/// The animatronics (Captain Barnacle, The Diver, The Depth Stalker) each
-/// live in their own script and only hook into the systems below (lights,
-/// cameras, Sonar, Release Pressure). This file holds none of their AI -
-/// it only owns what they share: camera occupancy sprites and the
-/// one-at-a-time jumpscare flow (see BeginJumpscare()).
+/// The animatronics (Captain Barnacle, The Diver, The Depth Stalker, and
+/// the Hypoxia phantom Lumina) each live in their own script and only hook
+/// into the systems below (lights, cameras, oxygen, Sonar, Release
+/// Pressure). This file holds none of their AI - it only owns what they
+/// share: camera occupancy sprites, the one-at-a-time jumpscare flow (see
+/// BeginJumpscare()), and Lumina's non-lethal jumpscare (see
+/// TriggerLuminaJumpscare()).
 ///
 /// This GameObject is a plain, isolated root object - it does not need to be
 /// parented under the Canvas and does not carry any UI Graphic component.
@@ -162,6 +164,14 @@ public class GameMaster : MonoBehaviour
     // Tracked separately from the raw float so we only toggle the overlay
     // on the exact frame the threshold is crossed, not every frame.
     private bool isHypoxic;
+
+    /// <summary>
+    /// Read-only access to whether the office is currently in the Hypoxia
+    /// state (oxygen below hypoxiaThresholdPercent). Added so Lumina - who
+    /// only exists while the player is hypoxic - can poll it every frame
+    /// without needing a public setter.
+    /// </summary>
+    public bool IsHypoxic => isHypoxic;
 
     /// <summary>
     /// Drains oxygen (naturally, plus extra if Release Pressure is held),
@@ -712,6 +722,29 @@ public class GameMaster : MonoBehaviour
     // True while the Camera Monitor is open and covering the view.
     private bool isCameraPanelOpen;
 
+    /// <summary>
+    /// True while EITHER panel (Maintenance or Camera Monitor) is covering
+    /// the office view. Used by Lumina: while no panel is open, the player
+    /// is "looking at" the office window she may be standing behind.
+    /// </summary>
+    public bool IsAnyPanelOpen => isMaintenancePanelOpen || isCameraPanelOpen;
+
+    /// <summary>
+    /// Raised exactly ONCE every time the player puts a new camera feed on
+    /// screen: opening the monitor, clicking a camera/vent button, or
+    /// flipping the Map layer. Lumina listens to this to roll her chance to
+    /// appear on whatever feed the player is now looking at (and to vanish
+    /// if the player switched away from her). Static for the same reason as
+    /// OnSonarPing - there is exactly one GameMaster in the scene.
+    /// </summary>
+    public static event System.Action OnCameraViewChanged;
+
+    /// <summary>
+    /// Raised every time the Camera Monitor closes for any reason - the
+    /// player closing it, the lights turning off, or Lumina force-closing it.
+    /// </summary>
+    public static event System.Action OnCameraMonitorClosed;
+
     // Which camera feed is currently selected, or -1 if none has been
     // picked yet this session.
     private int currentCameraIndex = -1;
@@ -775,15 +808,19 @@ public class GameMaster : MonoBehaviour
         // Only the very first open this night has no prior selection
         // (currentCameraIndex is still -1) - show the configured default.
         // Every open after that leaves currentCameraIndex/cameraFeedViews
-        // exactly as SelectCamera() last set them, so the Monitor remembers
+        // exactly as ShowCameraFeed() last set them, so the Monitor remembers
         // the last-viewed camera automatically.
         if (currentCameraIndex == -1)
         {
-            SelectCamera(defaultCameraIndex);
+            ShowCameraFeed(defaultCameraIndex);
         }
 
         // Note: unlike before, we deliberately do NOT hide cameraOpenButton
         // here - it needs to stay visible so the player can click it again to close.
+
+        // A feed just came on screen. Raised here (not from ShowCameraFeed()
+        // above) so the first open of the night still only fires it once.
+        OnCameraViewChanged?.Invoke();
     }
 
     /// <summary>Internal helper that actually closes the panel. Use ToggleCameraMonitor() from the Inspector instead of this directly.</summary>
@@ -805,6 +842,22 @@ public class GameMaster : MonoBehaviour
         if (isViewingVents)
         {
             SetMapLayer(false);
+        }
+
+        OnCameraMonitorClosed?.Invoke();
+    }
+
+    /// <summary>
+    /// Closes the Camera Monitor from outside GameMaster, ignoring the
+    /// Sonar Ping lock - the same way turning the lights off already can.
+    /// Used by Lumina, who slams the monitor shut right before her
+    /// jumpscare if the player keeps staring at her on camera.
+    /// </summary>
+    public void ForceCloseCameraMonitor()
+    {
+        if (isCameraPanelOpen)
+        {
+            CloseCameraMonitor();
         }
     }
 
@@ -843,9 +896,11 @@ public class GameMaster : MonoBehaviour
     /// <summary>
     /// Switches the Camera Monitor to show a specific camera's feed. Hook
     /// one of these up (with the matching index) to each camera button you
-    /// build inside the Camera Monitor panel. Currently this only swaps
-    /// which placeholder view is visible - no animatronic tracking exists
-    /// yet, so selecting a camera has no gameplay effect beyond the view.
+    /// build inside the Camera Monitor panel. This is the PLAYER-facing
+    /// entry point - it raises OnCameraViewChanged once the feed is shown.
+    /// Code inside GameMaster that needs to pick a default camera calls
+    /// ShowCameraFeed() directly instead, so the event never fires twice
+    /// for a single player action.
     /// </summary>
     public void SelectCamera(int cameraIndex)
     {
@@ -856,25 +911,17 @@ public class GameMaster : MonoBehaviour
             return;
         }
 
-        // Guard against an out-of-range index (e.g. an Inspector typo)
-        // rather than throwing an exception mid-game.
-        if (cameraFeedViews == null || cameraIndex < 0 || cameraIndex >= cameraFeedViews.Length)
+        if (ShowCameraFeed(cameraIndex))
         {
-            Debug.LogWarning("GameMaster.SelectCamera: index " + cameraIndex + " is out of range.");
-            return;
+            OnCameraViewChanged?.Invoke();
         }
-
-        currentCameraIndex = cameraIndex;
-        ActivateOnlyIndex(cameraFeedViews, currentCameraIndex);
-        RefreshAllCameraSelectButtonHighlights();
     }
 
     /// <summary>
     /// Switches the Vent Network layer to show a specific vent camera's
     /// feed. Hook one of these up (with the matching index) to each vent
     /// button you build inside ventCameraSelectorRoot. Works exactly like
-    /// SelectCamera() above, just targeting the vent arrays/state instead of
-    /// the regular camera ones - the two layers are otherwise identical.
+    /// SelectCamera() above, just targeting the vent layer instead.
     /// </summary>
     public void SelectVentCamera(int ventCameraIndex)
     {
@@ -885,21 +932,53 @@ public class GameMaster : MonoBehaviour
             return;
         }
 
+        if (ShowVentCameraFeed(ventCameraIndex))
+        {
+            OnCameraViewChanged?.Invoke();
+        }
+    }
+
+    /// <summary>
+    /// Does the actual work of putting a regular camera's feed on screen:
+    /// remembers it as the current camera, shows only its view, and
+    /// refreshes the button highlights. Returns false (and does nothing) if
+    /// the index is out of range. Raises no events - see SelectCamera().
+    /// </summary>
+    private bool ShowCameraFeed(int cameraIndex)
+    {
+        // Guard against an out-of-range index (e.g. an Inspector typo)
+        // rather than throwing an exception mid-game.
+        if (cameraFeedViews == null || cameraIndex < 0 || cameraIndex >= cameraFeedViews.Length)
+        {
+            Debug.LogWarning("GameMaster.ShowCameraFeed: index " + cameraIndex + " is out of range.");
+            return false;
+        }
+
+        currentCameraIndex = cameraIndex;
+        ActivateOnlyIndex(cameraFeedViews, currentCameraIndex);
+        RefreshAllCameraSelectButtonHighlights();
+        return true;
+    }
+
+    /// <summary>The vent-layer version of ShowCameraFeed() above.</summary>
+    private bool ShowVentCameraFeed(int ventCameraIndex)
+    {
         // Guard against an out-of-range index (e.g. an Inspector typo)
         // rather than throwing an exception mid-game.
         if (ventFeedViews == null || ventCameraIndex < 0 || ventCameraIndex >= ventFeedViews.Length)
         {
-            Debug.LogWarning("GameMaster.SelectVentCamera: index " + ventCameraIndex + " is out of range.");
-            return;
+            Debug.LogWarning("GameMaster.ShowVentCameraFeed: index " + ventCameraIndex + " is out of range.");
+            return false;
         }
 
         currentVentCameraIndex = ventCameraIndex;
         ActivateOnlyIndex(ventFeedViews, currentVentCameraIndex);
         RefreshAllCameraSelectButtonHighlights();
+        return true;
     }
 
     /// <summary>
-    /// Shared helper used by both SelectCamera() and SelectVentCamera():
+    /// Shared helper used by both ShowCameraFeed() and ShowVentCameraFeed():
     /// activates only the view at indexToShow within the given array and
     /// deactivates every other one, so only a single feed is ever visible
     /// at a time within a layer.
@@ -931,6 +1010,10 @@ public class GameMaster : MonoBehaviour
         }
 
         SetMapLayer(!isViewingVents);
+
+        // Flipping layers puts a different feed on screen, which counts as
+        // switching camera (e.g. for Lumina).
+        OnCameraViewChanged?.Invoke();
     }
 
     /// <summary>
@@ -963,7 +1046,7 @@ public class GameMaster : MonoBehaviour
         // regular layer's first-ever open.
         if (isViewingVents && currentVentCameraIndex == -1)
         {
-            SelectVentCamera(defaultVentCameraIndex);
+            ShowVentCameraFeed(defaultVentCameraIndex);
         }
     }
 
@@ -1685,6 +1768,26 @@ public class GameMaster : MonoBehaviour
     [Tooltip("How long (in real seconds) The Depth Stalker's jumpscare sprite stays on screen before the real Game Over screen appears.")]
     [SerializeField] private float depthStalkerJumpscareDurationSeconds = 2.5f;
 
+    [Header("Lumina Jumpscare (non-lethal)")]
+
+    [Tooltip("Lumina's jumpscare sprite/GameObject. Should start INACTIVE in the editor. Like the others, this should be a fixed overlay (not parented under the panning office sprite). Unlike the others, it does NOT end the night - it is simply hidden again after its duration and the night carries on.")]
+    [SerializeField] private GameObject luminaJumpscareObject;
+
+    [Tooltip("How long (in real seconds) Lumina's jumpscare sprite stays on screen. The rest of the game keeps running underneath it the whole time.")]
+    [SerializeField] private float luminaJumpscareDurationSeconds = 1.5f;
+
+    // The currently-running Lumina jumpscare, if one is on screen. Kept so
+    // a second one can't start on top of it, and so HideAllPanelsAndButtons()
+    // can cancel it if the night ends while it is still showing.
+    private Coroutine luminaJumpscareCoroutine;
+
+    /// <summary>
+    /// Raised the instant Lumina's jumpscare starts. Captain Barnacle
+    /// subscribes to this to become more aggressive for a while afterwards.
+    /// Static for the same reason as OnSonarPing.
+    /// </summary>
+    public static event System.Action OnLuminaJumpscare;
+
     /// <summary>
     /// Called by CaptainBarnacle the instant his movement timer resolves a
     /// kill while he's waiting At Door. Rather than ending the night
@@ -1715,6 +1818,38 @@ public class GameMaster : MonoBehaviour
     public void TriggerDepthStalkerJumpscare()
     {
         BeginJumpscare(depthStalkerJumpscareObject, depthStalkerJumpscareDurationSeconds, "The Depth Stalker");
+    }
+
+    /// <summary>
+    /// Called by Lumina when she catches the player. Unlike every other
+    /// jumpscare this one is NOT lethal and does NOT go through
+    /// BeginJumpscare(): the game state stays Playing, so the clock, oxygen
+    /// and every other animatronic keep running while her sprite covers the
+    /// screen - that is exactly what makes her a dangerous distraction.
+    /// </summary>
+    public void TriggerLuminaJumpscare()
+    {
+        // Ignore it if the night is already ending, or if one of her
+        // jumpscares is already on screen.
+        if (currentState != GameState.Playing || luminaJumpscareCoroutine != null)
+        {
+            return;
+        }
+
+        Debug.Log("[GameMaster] Lumina's jumpscare triggered (non-lethal) - the night continues.");
+        luminaJumpscareCoroutine = StartCoroutine(LuminaJumpscareRoutine());
+        OnLuminaJumpscare?.Invoke();
+    }
+
+    /// <summary>Shows Lumina's jumpscare sprite for its duration, then hides it again.</summary>
+    private IEnumerator LuminaJumpscareRoutine()
+    {
+        SetActiveIfAssigned(luminaJumpscareObject, true);
+
+        yield return new WaitForSeconds(luminaJumpscareDurationSeconds);
+
+        SetActiveIfAssigned(luminaJumpscareObject, false);
+        luminaJumpscareCoroutine = null;
     }
 
     /// <summary>
@@ -1808,6 +1943,16 @@ public class GameMaster : MonoBehaviour
         {
             sonarHeatMeter.gameObject.SetActive(false);
         }
+
+        // If Lumina's (non-lethal) jumpscare was still on screen when the
+        // night ended - e.g. Barnacle's real jumpscare landed during it -
+        // cancel it so her sprite doesn't stay stuck over the end screen.
+        if (luminaJumpscareCoroutine != null)
+        {
+            StopCoroutine(luminaJumpscareCoroutine);
+            luminaJumpscareCoroutine = null;
+        }
+        SetActiveIfAssigned(luminaJumpscareObject, false);
     }
 
 

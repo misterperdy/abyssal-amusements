@@ -25,6 +25,8 @@ using UnityEngine;
 ///     WAITS there, and his next successful movement opportunity is what
 ///     actually advances him from the Window to Cam4, or kills the player
 ///     from the Door.
+///   - Every time Lumina jumpscares the player he becomes ENRAGED for a
+///     while, rolling his movement checks faster (see Lumina Rage Settings).
 ///
 /// HOW THE PLAYER FIGHTS BACK:
 ///   - Sonar Ping (fired by GameMaster) can push him back while he is
@@ -131,6 +133,20 @@ public class CaptainBarnacle : MonoBehaviour
 
 
     // -------------------------------------------------------------------
+    // REGION: LUMINA RAGE SETTINGS
+    // -------------------------------------------------------------------
+    [Header("Lumina Rage Settings")]
+
+    [Tooltip("How much faster Barnacle's movement check timer ticks right after a Lumina jumpscare. 2 = checks twice as often (a 5s interval becomes 2.5s). His AI Level itself is unchanged.")]
+    [Min(1f)]
+    [SerializeField] private float luminaRageSpeedMultiplier = 2f;
+
+    [Tooltip("How long (in real seconds) the rage lasts after a Lumina jumpscare. Another Lumina jumpscare during the rage restarts this timer from full (it does not stack).")]
+    [Min(0f)]
+    [SerializeField] private float luminaRageDurationSeconds = 25f;
+
+
+    // -------------------------------------------------------------------
     // REGION: VISUALS - WINDOW (GHOST CAMERA)
     // -------------------------------------------------------------------
     [Header("Visuals - Window (Ghost Camera)")]
@@ -159,6 +175,11 @@ public class CaptainBarnacle : MonoBehaviour
     // go before the rolled duration elapses.
     private Coroutine pushbackHoldCoroutine;
 
+    // How many seconds of Lumina rage are left. Above 0 means he is
+    // enraged and his movement check timer ticks luminaRageSpeedMultiplier
+    // times faster. Set by HandleLuminaJumpscare(), counted down in Update().
+    private float luminaRageTimeRemaining;
+
 
     // -------------------------------------------------------------------
     // REGION: UNITY LIFECYCLE
@@ -175,6 +196,7 @@ public class CaptainBarnacle : MonoBehaviour
         GameMaster.OnSonarPing += HandleSonarPing;
         GameMaster.OnReleasePressureStarted += HandleReleasePressureStarted;
         GameMaster.OnReleasePressureStopped += HandleReleasePressureStopped;
+        GameMaster.OnLuminaJumpscare += HandleLuminaJumpscare;
     }
 
     /// <summary>Unsubscribes from every event we subscribed to in OnEnable(), to avoid leaking a subscription onto a destroyed/disabled object.</summary>
@@ -183,6 +205,7 @@ public class CaptainBarnacle : MonoBehaviour
         GameMaster.OnSonarPing -= HandleSonarPing;
         GameMaster.OnReleasePressureStarted -= HandleReleasePressureStarted;
         GameMaster.OnReleasePressureStopped -= HandleReleasePressureStopped;
+        GameMaster.OnLuminaJumpscare -= HandleLuminaJumpscare;
     }
 
     /// <summary>Picks Barnacle's spawn room for the night. All sprite work happens on GameMaster - see SpawnAtRandomCamera()/MoveTo() below.</summary>
@@ -210,7 +233,21 @@ public class CaptainBarnacle : MonoBehaviour
             return;
         }
 
-        movementCheckTimer += Time.deltaTime;
+        // While enraged by a Lumina jumpscare, his timer ticks faster, so
+        // movement checks come around more often.
+        float timerSpeed = 1f;
+        if (luminaRageTimeRemaining > 0f)
+        {
+            timerSpeed = luminaRageSpeedMultiplier;
+            luminaRageTimeRemaining -= Time.deltaTime;
+
+            if (luminaRageTimeRemaining <= 0f)
+            {
+                Debug.Log("[Barnacle] Lumina rage ended - back to his normal pace.");
+            }
+        }
+
+        movementCheckTimer += Time.deltaTime * timerSpeed;
         if (movementCheckTimer >= movementCheckIntervalSeconds)
         {
             movementCheckTimer = 0f;
@@ -568,6 +605,22 @@ public class CaptainBarnacle : MonoBehaviour
         Debug.Log("[Barnacle] Held Release Pressure long enough! Pushed back from " + currentLocation + " to " + pushbackTarget + ".");
         MoveTo(pushbackTarget);
         pushbackHoldCoroutine = null;
+    }
+
+
+    // -------------------------------------------------------------------
+    // REGION: LUMINA RAGE
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Fires the instant Lumina jumpscares the player. Starts (or restarts
+    /// from full) his rage window - see the Lumina Rage Settings above and
+    /// Update() for how it speeds up his movement checks.
+    /// </summary>
+    private void HandleLuminaJumpscare()
+    {
+        luminaRageTimeRemaining = luminaRageDurationSeconds;
+        Debug.Log("[Barnacle] Lumina jumpscared the player - he is ENRAGED (movement checks x" + luminaRageSpeedMultiplier.ToString("F1") + " for " + luminaRageDurationSeconds.ToString("F0") + "s).");
     }
 
 
