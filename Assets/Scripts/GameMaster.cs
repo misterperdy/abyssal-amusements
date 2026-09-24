@@ -632,6 +632,12 @@ public class GameMaster : MonoBehaviour
     // up to date exclusively via SetCaptainBarnacleCameraIndex() below.
     private int barnacleCameraIndex = -1;
 
+    // Which regular camera (0-6) a HALLUCINATED Captain Barnacle currently
+    // occupies, or -1 if there is no fake on any camera. Drawn with exactly
+    // the same sprites as the real one, so the player can't tell them apart.
+    // Kept up to date exclusively via SetFakeBarnacleCameraIndex() below.
+    private int fakeBarnacleCameraIndex = -1;
+
     [Header("Camera Monitor - The Diver Occupancy Sprites")]
     // The Diver only ever shows up on ONE regular camera (CAM 05) and ONE
     // vent camera (CAM 08), so unlike Barnacle's per-camera arrays above,
@@ -1082,6 +1088,13 @@ public class GameMaster : MonoBehaviour
     }
 
     /// <summary>
+    /// The REGULAR camera (0-6) currently on screen, or -1 if the monitor is
+    /// closed or showing the Vent Network. Used by BarnacleHallucination to
+    /// put a fake Barnacle on the feed the player just switched to.
+    /// </summary>
+    public int WatchedRegularCameraIndex => (isCameraPanelOpen && !isViewingVents) ? currentCameraIndex : -1;
+
+    /// <summary>
     /// Called by CaptainBarnacle every time his location changes, so
     /// GameMaster (which owns every camera sprite) can keep each affected
     /// camera's visible art in sync. Pass the 0-based camera index he just
@@ -1095,6 +1108,28 @@ public class GameMaster : MonoBehaviour
     {
         int previousIndex = barnacleCameraIndex;
         barnacleCameraIndex = cameraIndex;
+
+        if (previousIndex != -1)
+        {
+            RefreshCameraFeedSprite(previousIndex);
+        }
+
+        if (cameraIndex != -1)
+        {
+            RefreshCameraFeedSprite(cameraIndex);
+        }
+    }
+
+    /// <summary>
+    /// Called by BarnacleHallucination whenever a fake Captain Barnacle
+    /// appears on or leaves a regular camera. Works exactly like
+    /// SetCaptainBarnacleCameraIndex() above: pass the 0-based camera index,
+    /// or -1 once the fake is gone. Refreshes both cameras immediately.
+    /// </summary>
+    public void SetFakeBarnacleCameraIndex(int cameraIndex)
+    {
+        int previousIndex = fakeBarnacleCameraIndex;
+        fakeBarnacleCameraIndex = cameraIndex;
 
         if (previousIndex != -1)
         {
@@ -1166,6 +1201,8 @@ public class GameMaster : MonoBehaviour
     ///
     /// Any chosen sprite that hasn't been assigned in the Inspector yet
     /// falls back to the empty-room sprite rather than showing a white box.
+    /// A hallucinated Barnacle (fakeBarnacleCameraIndex) counts as
+    /// "Barnacle here" too, so he gets exactly the same sprites.
     /// </summary>
     private void RefreshCameraFeedSprite(int cameraIndex)
     {
@@ -1180,7 +1217,7 @@ public class GameMaster : MonoBehaviour
             return;
         }
 
-        bool barnacleHere = (cameraIndex == barnacleCameraIndex);
+        bool barnacleHere = (cameraIndex == barnacleCameraIndex) || (cameraIndex == fakeBarnacleCameraIndex);
         bool diverHere = (cameraIndex == diverCameraIndex);
         bool lit = (cameraIndex == sonarLitCameraIndex);
 
@@ -1989,6 +2026,7 @@ public class GameMaster : MonoBehaviour
         // otherwise via SetCaptainBarnacleCameraIndex()/SetDiverCameraIndex()/
         // SetDiverVentCameraIndex(), and no camera is mid Sonar flash yet.
         barnacleCameraIndex = -1;
+        fakeBarnacleCameraIndex = -1;
         diverCameraIndex = -1;
         diverVentCameraIndex = -1;
         sonarLitCameraIndex = -1;

@@ -211,6 +211,13 @@ public class CaptainBarnacle : MonoBehaviour
     // whole script that changes it.
     private BarnacleLocation currentLocation;
 
+    /// <summary>
+    /// Read-only access to where Barnacle really is right now. Added so
+    /// BarnacleHallucination never puts a fake Barnacle on top of the real
+    /// one, without needing a public setter.
+    /// </summary>
+    public BarnacleLocation CurrentLocation => currentLocation;
+
     // Counts up every frame (see Update()) until it reaches
     // movementCheckIntervalSeconds, at which point we roll for a movement
     // opportunity and reset this back to 0.
@@ -733,8 +740,8 @@ public class CaptainBarnacle : MonoBehaviour
         }
     }
 
-    /// <summary>Converts a camera NUMBER (1-7, matching the game bible's Cam01-Cam07 labels) into its BarnacleLocation.</summary>
-    private BarnacleLocation CameraNumberToLocation(int cameraNumber)
+    /// <summary>Converts a camera NUMBER (1-7, matching the game bible's Cam01-Cam07 labels) into its BarnacleLocation. Public and static so BarnacleHallucination can reuse it.</summary>
+    public static BarnacleLocation CameraNumberToLocation(int cameraNumber)
     {
         // Cam1 is enum value 0, Cam2 is 1, and so on - camera NUMBER minus
         // one lines up exactly with the enum's declaration order above.
@@ -747,8 +754,10 @@ public class CaptainBarnacle : MonoBehaviour
     /// numbering is what SetCaptainBarnacleCameraIndex() and the Sonar Ping
     /// event both use). Returns false for AtWindow and AtDoor, since
     /// neither of those is one of the 7 regular pingable/viewable cameras.
+    /// Public and static (it uses no per-Barnacle state) so
+    /// BarnacleHallucination can reuse the same mapping.
     /// </summary>
-    private bool TryGetCameraIndex(BarnacleLocation location, out int index)
+    public static bool TryGetCameraIndex(BarnacleLocation location, out int index)
     {
         switch (location)
         {
