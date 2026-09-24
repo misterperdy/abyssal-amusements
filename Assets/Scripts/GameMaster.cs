@@ -10,10 +10,11 @@ using TMPro;            // Gives us TMP_Text, used for all on-screen text in thi
 /// system a FNAF3-style night needs (before animatronics are added) lives here
 /// so there is exactly one place to look when tracing how the game behaves.
 ///
-/// Nothing in this script knows about Captain Barnacle, The Diver, The Depth
-/// Stalker, or Lumina yet - those will hook into the systems below (oxygen,
-/// lights, cameras) once they exist, but this file is intentionally free of
-/// any animatronic logic for this first playable slice.
+/// The animatronics (Captain Barnacle, The Diver, The Depth Stalker) each
+/// live in their own script and only hook into the systems below (lights,
+/// cameras, Sonar, Release Pressure). This file holds none of their AI -
+/// it only owns what they share: camera occupancy sprites and the
+/// one-at-a-time jumpscare flow (see BeginJumpscare()).
 ///
 /// This GameObject is a plain, isolated root object - it does not need to be
 /// parented under the Canvas and does not carry any UI Graphic component.
@@ -1676,6 +1677,14 @@ public class GameMaster : MonoBehaviour
     [Tooltip("How long (in real seconds) The Diver's jumpscare sprite stays on screen before the real Game Over screen appears.")]
     [SerializeField] private float diverJumpscareDurationSeconds = 2.5f;
 
+    [Header("End States - The Depth Stalker Jumpscare")]
+
+    [Tooltip("The Depth Stalker's jumpscare sprite/GameObject, shown the instant the lights have stayed off for too long. Should start INACTIVE in the editor. Like the others, this should be a fixed overlay (not parented under the panning office sprite).")]
+    [SerializeField] private GameObject depthStalkerJumpscareObject;
+
+    [Tooltip("How long (in real seconds) The Depth Stalker's jumpscare sprite stays on screen before the real Game Over screen appears.")]
+    [SerializeField] private float depthStalkerJumpscareDurationSeconds = 2.5f;
+
     /// <summary>
     /// Called by CaptainBarnacle the instant his movement timer resolves a
     /// kill while he's waiting At Door. Rather than ending the night
@@ -1696,6 +1705,16 @@ public class GameMaster : MonoBehaviour
     public void TriggerDiverJumpscare()
     {
         BeginJumpscare(diverJumpscareObject, diverJumpscareDurationSeconds, "The Diver");
+    }
+
+    /// <summary>
+    /// Called by TheDepthStalker the instant his darkness meter fills up
+    /// (the lights stayed off for too long). Same jumpscare beat as the
+    /// others, just with The Depth Stalker's own sprite and duration.
+    /// </summary>
+    public void TriggerDepthStalkerJumpscare()
+    {
+        BeginJumpscare(depthStalkerJumpscareObject, depthStalkerJumpscareDurationSeconds, "The Depth Stalker");
     }
 
     /// <summary>

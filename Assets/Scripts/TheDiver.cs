@@ -435,6 +435,13 @@ public class TheDiver : MonoBehaviour
             // any other end of the night) has already started, so two
             // jumpscares can never play at once.
             Debug.Log("[Diver] The player didn't turn the lights off in time - jumpscare!");
+
+            // Hide his in-office sprite first - the jumpscare overlay IS him, so
+            // leaving this on would show two of him at once. We deliberately don't
+            // go through EnterState() here: he isn't moving anywhere, the night is
+            // simply ending.
+            SetVisualActive(officeVisualObject, false);
+
             gameMaster.TriggerDiverJumpscare();
         }
     }
