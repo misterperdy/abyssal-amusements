@@ -4797,7 +4797,7 @@ PrefabInstance:
     m_Modifications:
     - target: {fileID: 3198207884394573791, guid: 0f5f7715847b0be4ba2bb85b47563c95, type: 3}
       propertyPath: m_text
-      value: CAM 05
+      value: CAM 08
       objectReference: {fileID: 0}
     - target: {fileID: 6201813625130303856, guid: 0f5f7715847b0be4ba2bb85b47563c95, type: 3}
       propertyPath: m_Pivot.x
@@ -4889,11 +4889,11 @@ PrefabInstance:
       objectReference: {fileID: 1471672201}
     - target: {fileID: 8384995699170891273, guid: 0f5f7715847b0be4ba2bb85b47563c95, type: 3}
       propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_MethodName
-      value: SelectCamera
+      value: SelectVentCamera
       objectReference: {fileID: 0}
     - target: {fileID: 8384995699170891273, guid: 0f5f7715847b0be4ba2bb85b47563c95, type: 3}
       propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_Arguments.m_IntArgument
-      value: 4
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 9099827518407829300, guid: 0f5f7715847b0be4ba2bb85b47563c95, type: 3}
       propertyPath: m_AnchoredPosition.x
@@ -5698,6 +5698,7 @@ MonoBehaviour:
   cam4ToDoorWeight: 1.5
   spawnMinCameraNumber: 3
   spawnMaxCameraNumber: 7
+  doorJumpscareDelaySeconds: 10
   pushbackHoldMinSeconds: 1
   pushbackHoldMaxSeconds: 3
   luminaRageSpeedMultiplier: 2

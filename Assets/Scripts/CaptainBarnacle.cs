@@ -1,4 +1,3 @@
-using System.Collections;   // Gives us IEnumerator, needed for the Release Pressure pushback timer coroutine.
 using UnityEngine;
 
 /// <summary>
@@ -25,9 +24,11 @@ using UnityEngine;
 ///     the Window route (Cam2 - Cam1 - Window - Cam4), not the short
 ///     Cam2 - Cam3 - Cam4 route.
 ///   - Reaching the Window or the Door is not instant death/danger - he
-///     WAITS there, and his next successful movement opportunity is what
-///     actually advances him from the Window to Cam4, or kills the player
-///     from the Door.
+///     WAITS there. From the Window, his next successful movement
+///     opportunity advances him to Cam4. At the Door he stops rolling
+///     movement checks entirely: a dedicated Door timer
+///     (doorJumpscareDelaySeconds) runs, and when it runs out he
+///     jumpscares the player.
 ///   - Every time Lumina jumpscares the player he becomes ENRAGED for a
 ///     while, rolling his movement checks faster (see Lumina Rage Settings).
 ///
@@ -48,7 +49,7 @@ public class CaptainBarnacle : MonoBehaviour
     // bible's camera numbering exactly. AtWindow is the "ghost camera"
     // position between Cam1 and Cam4, visible through the office's front
     // glass. AtDoor is the final, lethal waiting spot right outside the
-    // office - the next movement he scores while here ends the night.
+    // office - once his Door timer runs out while here, the night ends.
     public enum BarnacleLocation
     {
         Cam1,
@@ -168,11 +169,21 @@ public class CaptainBarnacle : MonoBehaviour
 
 
     // -------------------------------------------------------------------
+    // REGION: DOOR SETTINGS
+    // -------------------------------------------------------------------
+    [Header("Door Settings")]
+
+    [Tooltip("How long (in real seconds) Barnacle waits at the Door before he jumpscares the player - guaranteed, unless Release Pressure pushes him back first. Separate from Movement Check Interval Seconds (he rolls no movement checks at the Door). Lumina's rage speeds this timer up by the rage multiplier.")]
+    [Min(0f)]
+    [SerializeField] private float doorJumpscareDelaySeconds = 10f;
+
+
+    // -------------------------------------------------------------------
     // REGION: RELEASE PRESSURE PUSHBACK SETTINGS
     // -------------------------------------------------------------------
     [Header("Release Pressure Pushback Settings")]
 
-    [Tooltip("The shortest amount of time (in real seconds) the player might need to hold Release Pressure to push Barnacle back from the Window or the Door. A fresh random value between this and the Max is rolled every time the player starts holding.")]
+    [Tooltip("The shortest amount of time (in real seconds) the player might need to hold Release Pressure to push Barnacle back from the Window or the Door. A fresh random value between this and the Max is rolled every time the player starts holding, and every time he arrives at the Window or the Door.")]
     [SerializeField] private float pushbackHoldMinSeconds = 1f;
 
     [Tooltip("The longest amount of time (in real seconds) the player might need to hold Release Pressure to push Barnacle back from the Window or the Door.")]
@@ -184,7 +195,7 @@ public class CaptainBarnacle : MonoBehaviour
     // -------------------------------------------------------------------
     [Header("Lumina Rage Settings")]
 
-    [Tooltip("How much faster Barnacle's movement check timer ticks right after a Lumina jumpscare. 2 = checks twice as often (a 5s interval becomes 2.5s). His AI Level itself is unchanged.")]
+    [Tooltip("How much faster Barnacle's timers tick right after a Lumina jumpscare - both his movement checks and his Door deadline. 2 = twice as fast (a 5s check interval becomes 2.5s, a 10s Door deadline becomes 5s). His AI Level itself is unchanged.")]
     [Min(1f)]
     [SerializeField] private float luminaRageSpeedMultiplier = 2f;
 
@@ -223,15 +234,27 @@ public class CaptainBarnacle : MonoBehaviour
     // opportunity and reset this back to 0.
     private float movementCheckTimer;
 
-    // The in-progress "is the player holding Release Pressure long enough
-    // to push Barnacle back" coroutine, if one is currently running. Kept
-    // so HandleReleasePressureStopped() can cancel it if the player lets
-    // go before the rolled duration elapses.
-    private Coroutine pushbackHoldCoroutine;
+    // While At Door: how long he has been waiting there. Reaching
+    // doorJumpscareDelaySeconds ends the night. Reset in MoveTo() every
+    // time he arrives at the Door.
+    private float doorTimer;
+
+    // True for as long as the player is holding Release Pressure. Tracked
+    // all the time (not only while he is at the Window/Door), so a hold
+    // that started BEFORE he arrived still counts once he gets there.
+    private bool isHoldingPressure;
+
+    // While At Window / At Door and the player is holding Release Pressure:
+    // how long they have held it since he arrived (or since they pressed,
+    // whichever came later), and how long they need to hold it to push him
+    // back. The requirement is rolled fresh on every press and every arrival.
+    private float pushbackHoldTimer;
+    private float requiredPushbackHoldSeconds;
 
     // How many seconds of Lumina rage are left. Above 0 means he is
-    // enraged and his movement check timer ticks luminaRageSpeedMultiplier
-    // times faster. Set by HandleLuminaJumpscare(), counted down in Update().
+    // enraged and his movement check timer (and his Door timer) tick
+    // luminaRageSpeedMultiplier times faster. Set by HandleLuminaJumpscare(),
+    // counted down in Update().
     private float luminaRageTimeRemaining;
 
 
@@ -276,7 +299,7 @@ public class CaptainBarnacle : MonoBehaviour
         SpawnAtRandomCamera();
     }
 
-    /// <summary>Ticks the movement-opportunity timer for as long as the night is still in progress.</summary>
+    /// <summary>Ticks the Release Pressure hold, and either the Door timer (at the Door) or the movement-opportunity timer (everywhere else), for as long as the night is still in progress.</summary>
     private void Update()
     {
         // Don't act at all once the night has ended (Victory or GameOver) -
@@ -287,8 +310,13 @@ public class CaptainBarnacle : MonoBehaviour
             return;
         }
 
-        // While enraged by a Lumina jumpscare, his timer ticks faster, so
-        // movement checks come around more often.
+        // Release Pressure counterplay only ever matters at the Window or the
+        // Door - see UpdatePushbackHold(). If it pushes him back this frame,
+        // he's no longer at either spot, so nothing below double-acts.
+        UpdatePushbackHold();
+
+        // While enraged by a Lumina jumpscare, his timers tick faster, so
+        // movement checks (and the Door deadline) come around sooner.
         float timerSpeed = 1f;
         if (luminaRageTimeRemaining > 0f)
         {
@@ -301,12 +329,41 @@ public class CaptainBarnacle : MonoBehaviour
             }
         }
 
+        // At the Door he rolls no movement checks at all - only his
+        // dedicated Door deadline runs.
+        if (currentLocation == BarnacleLocation.AtDoor)
+        {
+            UpdateDoorTimer(timerSpeed);
+            return;
+        }
+
         movementCheckTimer += Time.deltaTime * timerSpeed;
         if (movementCheckTimer >= movementCheckIntervalSeconds)
         {
             movementCheckTimer = 0f;
             RollMovementOpportunity();
         }
+    }
+
+    /// <summary>
+    /// At the Door: counts up toward doorJumpscareDelaySeconds (faster while
+    /// enraged) and jumpscares the player once it gets there. The only way
+    /// out is Release Pressure pushing him back first.
+    /// </summary>
+    private void UpdateDoorTimer(float timerSpeed)
+    {
+        doorTimer += Time.deltaTime * timerSpeed;
+        if (doorTimer < doorJumpscareDelaySeconds)
+        {
+            return;
+        }
+
+        // The game bible's kill condition. GameMaster plays his jumpscare
+        // first and only shows the real Game Over screen once that beat
+        // finishes. Once it starts, the game state is no longer Playing, so
+        // the guard at the top of Update() stops this from firing twice.
+        Debug.Log("[Barnacle] He waited at the Door for " + doorJumpscareDelaySeconds.ToString("F1") + "s. Jumpscare triggered.");
+        gameMaster.TriggerCaptainBarnacleJumpscare();
     }
 
 
@@ -355,27 +412,25 @@ public class CaptainBarnacle : MonoBehaviour
     /// <summary>
     /// Decides what a successful movement opportunity actually does, based
     /// on where Barnacle currently is. See CaptainBarnacle_Design.md for the
-    /// full reasoning behind each room's rule - in short: most rooms use the
-    /// shared forward/backward roll, Cam2 and Cam4 are branch rooms with
-    /// their own resolution methods, and AtWindow/AtDoor don't roll
-    /// forward/backward at all - any success there just advances them.
+    /// full reasoning behind each room's rule - in short: most rooms roll
+    /// their own forward chance, Cam2 and Cam4 are branch rooms with their own
+    /// resolution methods, and AtWindow doesn't roll forward/backward at
+    /// all - any success there just advances him. AtDoor never gets here:
+    /// he rolls no movement checks at the Door (see UpdateDoorTimer()).
     /// </summary>
     private void ResolveMovement()
     {
         switch (currentLocation)
         {
             case BarnacleLocation.AtDoor:
-                // The game bible's kill condition: the next movement he
-                // scores while waiting at the door catches the player.
-                // GameMaster plays his jumpscare first and only shows the
-                // real Game Over screen once that beat finishes.
-                Debug.Log("[Barnacle] He moved from the Door. Jumpscare triggered.");
-                gameMaster.TriggerCaptainBarnacleJumpscare();
+                // Should be unreachable - Update() runs the Door timer instead
+                // of movement checks while he's here. Guarded just in case.
+                Debug.LogWarning("[Barnacle] ResolveMovement called while At Door - the Door timer handles this state, ignoring.");
                 return;
 
             case BarnacleLocation.AtWindow:
                 // No forward/backward roll here - any success advances him
-                // from the window straight to Cam4, mirroring the door.
+                // from the window straight to Cam4.
                 MoveTo(BarnacleLocation.Cam4);
                 return;
 
@@ -606,53 +661,82 @@ public class CaptainBarnacle : MonoBehaviour
     // -------------------------------------------------------------------
 
     /// <summary>
-    /// Fires the instant the player starts holding Release Pressure. Only
-    /// matters if Barnacle is currently waiting At Window or At Door - it
-    /// has zero effect on him anywhere else (Sonar Ping is the tool for
-    /// Cam1-Cam7, per the game bible).
+    /// Fires the instant the player starts holding Release Pressure. We
+    /// always remember that it's held (so a hold that started before he
+    /// reached the Window/Door still counts once he arrives), and roll a
+    /// fresh "how long must it be held" requirement for this press. It only
+    /// has any effect on him At Window or At Door - Sonar Ping is the tool
+    /// for Cam1-Cam7, per the game bible.
     /// </summary>
     private void HandleReleasePressureStarted()
     {
-        if (currentLocation != BarnacleLocation.AtWindow && currentLocation != BarnacleLocation.AtDoor)
+        isHoldingPressure = true;
+        ResetPushbackHold();
+
+        if (IsAtWindowOrDoor())
         {
-            return;
+            Debug.Log("[Barnacle] Release Pressure engaged while he waits " + currentLocation + " - needs to be held for " + requiredPushbackHoldSeconds.ToString("F2") + "s to push him back.");
         }
-
-        float requiredHoldSeconds = Random.Range(pushbackHoldMinSeconds, pushbackHoldMaxSeconds);
-        Debug.Log("[Barnacle] Release Pressure engaged while he waits " + currentLocation + " - needs to be held for " + requiredHoldSeconds.ToString("F2") + "s to push him back.");
-
-        pushbackHoldCoroutine = StartCoroutine(PushbackHoldRoutine(requiredHoldSeconds));
     }
 
     /// <summary>
-    /// Fires the instant the player lets go of Release Pressure. If a
-    /// pushback timer was running, cancel it - letting go early means no
-    /// pushback happens, and Barnacle's own movement timer simply keeps
-    /// running independently in the background.
+    /// Fires the instant the player lets go of Release Pressure. Letting go
+    /// before the required time means no pushback happens, and the hold
+    /// progress is lost.
     /// </summary>
     private void HandleReleasePressureStopped()
     {
-        if (pushbackHoldCoroutine == null)
+        if (IsAtWindowOrDoor() && pushbackHoldTimer > 0f)
+        {
+            Debug.Log("[Barnacle] Release Pressure let go after " + pushbackHoldTimer.ToString("F2") + "s of " + requiredPushbackHoldSeconds.ToString("F2") + "s - no pushback.");
+        }
+
+        isHoldingPressure = false;
+        pushbackHoldTimer = 0f;
+    }
+
+    /// <summary>
+    /// Runs every frame from Update(). While he waits At Window or At Door
+    /// and the player is holding Release Pressure, counts how long it has
+    /// been held and pushes him back once it reaches the rolled requirement.
+    /// Because this only counts while he is actually at one of those two
+    /// spots, a hold can never "push him back" after he has already left.
+    /// </summary>
+    private void UpdatePushbackHold()
+    {
+        if (!isHoldingPressure || !IsAtWindowOrDoor())
         {
             return;
         }
 
-        StopCoroutine(pushbackHoldCoroutine);
-        pushbackHoldCoroutine = null;
-        Debug.Log("[Barnacle] Release Pressure let go before the required hold time - no pushback.");
+        pushbackHoldTimer += Time.deltaTime;
+        if (pushbackHoldTimer >= requiredPushbackHoldSeconds)
+        {
+            PushBackFromReleasePressure();
+        }
+    }
+
+    /// <summary>Clears the hold progress and rolls a new required hold duration. Called on every press, and every time he arrives at the Window or the Door.</summary>
+    private void ResetPushbackHold()
+    {
+        pushbackHoldTimer = 0f;
+        requiredPushbackHoldSeconds = Random.Range(pushbackHoldMinSeconds, pushbackHoldMaxSeconds);
+    }
+
+    /// <summary>True while he is waiting at one of the two spots Release Pressure works on.</summary>
+    private bool IsAtWindowOrDoor()
+    {
+        return currentLocation == BarnacleLocation.AtWindow || currentLocation == BarnacleLocation.AtDoor;
     }
 
     /// <summary>
-    /// Waits out the rolled hold duration, then - since this coroutine only
-    /// ever reaches this point if the player kept holding the whole time
-    /// (HandleReleasePressureStopped() above cancels it otherwise) - pushes
-    /// Barnacle back to a random valid target for whichever special state
-    /// he was waiting in.
+    /// The player held Release Pressure long enough - pushes Barnacle back
+    /// to a random valid target for whichever special state he was waiting
+    /// in, and gives the player a full movement interval before his next
+    /// movement check.
     /// </summary>
-    private IEnumerator PushbackHoldRoutine(float requiredHoldSeconds)
+    private void PushBackFromReleasePressure()
     {
-        yield return new WaitForSeconds(requiredHoldSeconds);
-
         BarnacleLocation pushbackTarget;
         if (currentLocation == BarnacleLocation.AtWindow)
         {
@@ -674,7 +758,7 @@ public class CaptainBarnacle : MonoBehaviour
 
         Debug.Log("[Barnacle] Held Release Pressure long enough! Pushed back from " + currentLocation + " to " + pushbackTarget + ".");
         MoveTo(pushbackTarget);
-        pushbackHoldCoroutine = null;
+        movementCheckTimer = 0f;
     }
 
 
@@ -728,15 +812,31 @@ public class CaptainBarnacle : MonoBehaviour
         TryGetCameraIndex(next, out int nextCameraIndex);
         gameMaster.SetCaptainBarnacleCameraIndex(nextCameraIndex);
 
+        // Every arrival at the Window or the Door starts a fresh Release
+        // Pressure hold requirement. If the player is ALREADY holding it,
+        // UpdatePushbackHold() starts counting from this moment on.
+        if (IsAtWindowOrDoor())
+        {
+            ResetPushbackHold();
+
+            if (isHoldingPressure)
+            {
+                Debug.Log("[Barnacle] Arrived " + next + " while Release Pressure is already held - needs " + requiredPushbackHoldSeconds.ToString("F2") + "s more of holding to push him back.");
+            }
+        }
+
         if (next == BarnacleLocation.AtWindow && windowVisualObject != null)
         {
             windowVisualObject.SetActive(true);
         }
         else if (next == BarnacleLocation.AtDoor)
         {
+            // Start his dedicated Door deadline (see UpdateDoorTimer()).
+            doorTimer = 0f;
+
             // Game bible: no animation yet for the Door state, just a
             // one-time log the instant he enters it.
-            Debug.Log("[Barnacle] ENTERED THE DOOR. He is now waiting right outside the office - his next successful movement will end the night unless Release Pressure pushes him back first.");
+            Debug.Log("[Barnacle] ENTERED THE DOOR. He is now waiting right outside the office - he will jumpscare in " + doorJumpscareDelaySeconds.ToString("F1") + "s unless Release Pressure pushes him back first.");
         }
     }
 

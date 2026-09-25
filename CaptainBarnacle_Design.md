@@ -70,7 +70,7 @@ which is the intended knob for ramping difficulty across nights later.
 | **Cam2** (branch) | **No forward/backward roll.** Weighted pick among Cam1 / Cam3 / Cam7 (default weights 60 / 15 / 25, Inspector-tunable). |
 | **Cam4** (branch) | **No forward/backward roll at all.** Weighted pick among {Cam3, Cam5, **Door**} (default weights 2 / 1 / 1.5, Inspector-tunable; 1 / 1 / 1 is the game bible's original flat 1-in-3). Cam1 is deliberately excluded from this pick — the Window path only ever runs one way. |
 | **Window** | No forward/backward roll — *any* successful opportunity advances him straight to Cam4. |
-| **Door** | *Any* successful opportunity triggers his jumpscare, which leads to Game Over a short beat later (see "The Door Jumpscare" below) — this is literally how he kills the player. |
+| **Door** | **No movement checks at all.** A dedicated Door timer runs instead: after `doorJumpscareDelaySeconds` (default 10s, Inspector-tunable, sped up by Lumina's rage) he triggers his jumpscare, which leads to Game Over a short beat later (see "The Door Jumpscare" below) — this is literally how he kills the player. |
 
 Each of the five "plain" rooms (Cam1, Cam3, Cam5, Cam6, Cam7) has its own
 forward chance (`[0,1]`, inspector-tunable): a second `Random.value`
@@ -145,20 +145,24 @@ the player pings him at Cam2 or Cam3.
 
 ### Why the Window and the Door are "wait states," not instant transitions
 
-Both are treated identically on purpose: arriving at either one does **not**
-immediately do anything further. Barnacle *waits* there, continuing to roll
-his normal 5-second movement-opportunity timer, and it's specifically his
-*next* successful roll that resolves the state — advancing Window→Cam4, or
-killing the player from the Door. This symmetry is what makes both states
-readable and fair to react to: the player gets a window of real time (roughly
-one AI-level roll's worth, on average `movementCheckIntervalSeconds / aiLevel`
-seconds) to notice him and respond with Release Pressure before the next roll
-resolves against them.
+Arriving at either one does **not** immediately do anything further.
+Barnacle *waits* there, which gives the player real time to notice him and
+respond with Release Pressure:
+
+- At the **Window** he keeps rolling his normal 5-second movement-opportunity
+  timer, and his *next* successful roll advances him Window→Cam4 (on average
+  `movementCheckIntervalSeconds / aiLevel` seconds).
+- At the **Door** he stops rolling movement checks entirely. A dedicated,
+  fixed deadline (`doorJumpscareDelaySeconds`, default 10s) runs instead,
+  and when it expires he jumpscares the player — guaranteed. A fixed
+  deadline (rather than a random roll) makes the Door readable: the player
+  always knows exactly how long they have to push him back. Lumina's rage
+  speeds this deadline up by the same multiplier as his movement checks.
 
 ### The Door Jumpscare
 
 Reaching the kill condition at the Door doesn't end the night on the spot.
-`ResolveMovement()`'s `AtDoor` case calls `gameMaster.TriggerCaptainBarnacleJumpscare()`
+`UpdateDoorTimer()` calls `gameMaster.TriggerCaptainBarnacleJumpscare()`
 instead of ending the night directly, which:
 
 1. Immediately switches `GameMaster`'s state to a new `GameState.Jumpscare`
@@ -235,28 +239,33 @@ Release Pressure is the *opposite* tool: it does nothing at all while
 Barnacle occupies any of Cam1–Cam7 (Sonar is the tool there), and only
 matters while he is waiting at the **Window** or the **Door**.
 
-The instant the player starts holding Release Pressure, if Barnacle is in
-either wait state, a random hold requirement is rolled:
+A random hold requirement is rolled every time the player presses Release
+Pressure, **and** every time Barnacle arrives at the Window or the Door:
 
 ```
-requiredHoldSeconds = Random.Range(pushbackHoldMinSeconds, pushbackHoldMaxSeconds)
+requiredPushbackHoldSeconds = Random.Range(pushbackHoldMinSeconds, pushbackHoldMaxSeconds)
 // default range: 1-3 seconds
 ```
 
-If the player keeps holding for that entire rolled duration, he's pushed
-back:
+The hold is timed every frame in `UpdatePushbackHold()`, and it only counts
+while he is actually at the Window or the Door. So a hold that started
+*before* he arrived still works — it simply counts from the moment he
+arrives — and a hold can never push him back after he has already moved on
+(e.g. Window→Cam4 mid-hold). If the player keeps holding for the rolled
+duration while he's there, he's pushed back:
 
 - From **Window** → a random pick between Cam1 and Cam2.
 - From **Door** → a random pick among Cam3, Cam5, Cam6, and Cam7 (matching
   the game bible's exact list).
 
 If the player releases the button before the rolled duration elapses,
-**nothing happens** — the attempt is simply wasted, and Barnacle's own
-5-second movement timer keeps running independently in the background the
-whole time, regardless of whether Release Pressure is being held. This means
-a mistimed or too-short hold doesn't "buy" any extra safety — the only thing
-that matters is whether the hold is completed before Barnacle's own timer
-resolves the wait state against the player.
+**nothing happens** — the attempt is simply wasted, and Barnacle's own timer
+(his movement checks at the Window, his Door deadline at the Door) keeps
+running independently the whole time. This means a mistimed or too-short
+hold doesn't "buy" any extra safety — the only thing that matters is whether
+the hold is completed before Barnacle's own timer resolves the wait state
+against the player. A successful pushback also resets his movement-check
+timer, so the player gets a full interval before his next move.
 
 Both pushback destinations are picked uniformly at random rather than fixed,
 so the player can't fully predict (and therefore can't fully trivialize)
@@ -273,7 +282,7 @@ All additive, none of them change or remove any existing behavior:
 | `public GameState CurrentState => currentState;` | Lets Barnacle stop acting the instant Victory/GameOver triggers, matching how GameMaster itself freezes. |
 | `TriggerGameOver()` changed from `private` to `public` | Lets `TriggerCaptainBarnacleJumpscare()` (below) hand off to it once the jumpscare delay elapses; still used as-is for Suffocation's instant Game Over. |
 | `public static event Action OnReleasePressureStarted;` | Fires once, exactly when the player begins holding Release Pressure — refactored to go through a shared `StartReleasingPressure()` helper so it fires from the one real "press" entry point. |
-| `public static event Action OnReleasePressureStopped;` | Fires once whenever Release Pressure is stopped for *any* reason — pointer-up, closing the Maintenance Panel, turning the lights off mid-hold, or the night ending — via a shared `StopReleasingPressure()` helper, so Barnacle's hold-timer coroutine is reliably told to cancel in every case, not just a clean release. |
+| `public static event Action OnReleasePressureStopped;` | Fires once whenever Release Pressure is stopped for *any* reason — pointer-up, closing the Maintenance Panel, turning the lights off mid-hold, or the night ending — via a shared `StopReleasingPressure()` helper, so Barnacle's hold timer is reliably told to cancel in every case, not just a clean release. |
 | `public static event Action<int, bool> OnSonarPingStarted;` | Fires the instant a ping's illumination flash begins (see Section 4) — the existing `OnSonarPing` still fires once it ends. `GameMaster` also uses this same moment internally (not via the event) to show its own lit sprite. |
 | `public void SetCaptainBarnacleCameraIndex(int cameraIndex)` | Called by Barnacle every time his location changes (see Section 7). This is how `GameMaster` learns "where he is" without holding any reference back to `CaptainBarnacle` itself. |
 | `GameState.Jumpscare` value + `public void TriggerCaptainBarnacleJumpscare()` | Called by Barnacle instead of `TriggerGameOver()` when he catches the player at the Door (see "The Door Jumpscare" above). |

@@ -1332,7 +1332,7 @@ public class GameMaster : MonoBehaviour
     [Tooltip("How long (in real seconds) the monitor stays locked while a ping's illumination plays out. Game bible: 1.5 seconds.")]
     [SerializeField] private float pingLockDurationSeconds = 1.5f;
 
-    [Tooltip("Chance (0-1) that a ping's pushback attempt succeeds against Captain Barnacle, once he exists - the game bible's 'RNG Fail State'. Not yet consumed by any animatronic; kept here so the roll is ready the moment Barnacle is implemented.")]
+    [Tooltip("Chance (0-1) that a ping's pushback attempt succeeds against Captain Barnacle (and against a hallucinated Barnacle) - the game bible's 'RNG Fail State'. Rolled once per ping and passed along with the OnSonarPing event.")]
     [Range(0f, 1f)]
     [SerializeField] private float pushbackSuccessChance = 0.7f;
 
