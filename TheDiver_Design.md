@@ -256,9 +256,10 @@ so `CaptainBarnacle.cs` and the existing Inspector wiring didn't need to change.
 - **Not implemented:** the bible's "pulling up the Camera Monitor while he's
   at the grate = instant jumpscare". The Monitor is only a danger here
   because it slows the player's reaction.
-- **The Depth Stalker** (punishing lights kept off too long) doesn't exist
-  yet. Until it does, the player can camp in the dark to block both of his
-  appearance rolls, at the cost of losing cameras and Release Pressure.
+- **Camping in the dark** blocks both of his appearance rolls, at the cost
+  of losing cameras and Release Pressure. It is capped by **The Depth
+  Stalker**, who punishes lights kept off for too long (10s by default). See
+  `TheDepthStalker_Design.md`.
 - **No difficulty scaling across nights yet.** The knobs are exposed
   (`idleAppearChance`, `aiLevel`, `officeAppearChance`,
   `reactionWindowSeconds`), but wiring them to the night number is future

@@ -19,8 +19,12 @@ Release Pressure systems.
 Captain Barnacle patrols 7 regular cameras (Cam1–Cam7) plus two special,
 non-pingable waiting spots: the **Window** (the "ghost camera" position
 between Cam1 and Cam4, visible through the office's front glass) and the
-**Door** (directly outside the office — reaching it and then moving again is
-how he kills the player).
+**Door** (directly outside the office — once he has waited there for his
+Door deadline without being pushed back, he kills the player; see Section 3).
+
+His interactions with Lumina (his rage after her jumpscares, and the fake
+Barnacles the player hallucinates) are documented in `Lumina_Design.md`,
+Sections 7 and 8.
 
 The room graph (which camera connects to which) is a *theta graph*: two hub
 rooms, Cam2 and Cam4, are each connected to three other places, and between
